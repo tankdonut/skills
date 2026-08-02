@@ -1,0 +1,26 @@
+# oh-my-openagent scratch and code index (per-machine, not portable)
+.omo/
+.codegraph
+
+# Git worktrees
+.worktrees/
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+secrets/
+
+# Dependencies (skills ship zero-dep helpers, but guard local installs)
+node_modules/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
