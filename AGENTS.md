@@ -18,9 +18,6 @@ top-level directory containing a `SKILL.md`.
 | Dry-run a helper | `node <skill>/<script>.mjs --help` |
 | Install git hook | `pre-commit install` |
 | Run all checks | `pre-commit run --all-files` |
-| List installed skills | `skills ls` |
-| Preview this repo's skills | `skills add tankdonut/skills --list` |
-| Test skill discovery (local) | `skills add . --list` |
 
 ## Skill Authoring Rules
 
@@ -31,11 +28,18 @@ top-level directory containing a `SKILL.md`.
 - Validate every script with `node --check` and a real dry-run before committing.
 - Keep `SKILL.md` token-efficient; move heavy reference into a sibling file.
 
+## Adding a new skill
+
+1. `mkdir skills/<skill-name> && $EDITOR skills/<skill-name>/SKILL.md`
+2. Add any helper scripts in the same directory.
+3. Add a row to the **Skills** table in `README.md`.
+4. Verify: `skills add . --list` (discovery) and `node --check` + `--help` on every helper.
+5. Commit. Existing installs pick it up via `skills update`.
+
 ## Conventions
 
 - Preserve existing JSON indentation and trailing newlines when editing configs.
 - Never commit secrets or hard-coded absolute home paths in skill bodies.
-- Locate config files via the constants in `README.md`, never invented paths.
 
 ## Commit Attribution
 
