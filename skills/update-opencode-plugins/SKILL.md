@@ -1,6 +1,6 @@
 ---
 name: update-opencode-plugins
-description: Use when updating, upgrading, or bumping opencode plugin versions in opencode.json (user-level at ~/.config/opencode/opencode.json or project-level at .opencode/opencode.json), including resolving the latest npm release with an optional 7-day cooldown that skips too-fresh versions.
+description: Use when updating, upgrading, or bumping opencode plugin versions in opencode.json (user-level at ~/.config/opencode/opencode.json or project-level at .opencode/opencode.json), including resolving the latest npm release with an optional 7-day cooldown that skips too-fresh versions, and clearing the stale plugin cache at ~/.cache/opencode/packages so opencode never falls back to an older cached version.
 ---
 
 # Update OpenCode Plugin Versions
@@ -12,12 +12,21 @@ Keeps the `"plugin"` array in an `opencode.json` config current. Each entry is
 matching version from npm and rewrites the file, optionally skipping any version
 published within the last 7 days.
 
+After rewriting the config, the skill also clears every cached version of each
+**bumped** plugin from `~/.cache/opencode/packages`. opencode caches every
+installed plugin version side-by-side (`<name>@<ver>`); if a freshly-pinned
+version is not yet fetched, opencode silently falls back to the newest *cached*
+copy — which can be older than the pin and disagree with the current config
+schema, breaking every agent. Clearing the cache for bumped plugins forces a
+clean re-resolve on next start.
+
 ## Constants
 
 | Constant | Value |
 |----------|-------|
 | User config | `~/.config/opencode/opencode.json` |
 | Project config | `$PWD/.opencode/opencode.json` |
+| Plugin cache | `~/.cache/opencode/packages` |
 | npm registry | `https://registry.npmjs.org/<package>` |
 | Default cooldown | 7 days |
 
@@ -49,10 +58,10 @@ pins on entries that already exist in the `"plugin"` array.
    Do not assume; present both. If the user already stated a preference, skip.
 
 4. **Run the helper** once per chosen config. The helper (`update-plugins.mjs`,
-   beside this file) does fetch, compare, and write:
+   beside this file) does fetch, compare, write, and cache cleanup:
 
    ```bash
-   # dry run first (prints a diff, writes nothing)
+   # dry run first (prints a diff + the cache dirs it would clear, writes nothing)
    node <this-skill-dir>/update-plugins.mjs --config <path> --cooldown <0|7>
    # then apply after the user confirms (or skip if already approved)
    node <this-skill-dir>/update-plugins.mjs --config <path> --cooldown <0|7> --yes
@@ -61,11 +70,24 @@ pins on entries that already exist in the `"plugin"` array.
    `--cooldown 7` enables the cooldown; `--cooldown 0` means absolute latest.
    Add `--prerelease` only if the user explicitly wants beta/rc versions;
    stable releases are the default and what most users expect.
-   Always show the user the dry-run diff before applying unless they already
+
+   **Cache cleanup is on by default.** After writing the config, the helper
+   removes every cached version of each bumped plugin from
+   `~/.cache/opencode/packages` (default) so opencode re-resolves fresh and
+   cannot fall back to a stale older copy. Flags:
+   - `--cache <dir>` — override the cache dir (rarely needed; defaults to
+     `~/.cache/opencode/packages`).
+   - `--no-cache-clean` — skip cache cleanup entirely. Use only if the user
+     explicitly asks to leave the cache alone.
+
+   The dry run lists the exact cache dirs it would remove under a
+   "Stale cache dirs to remove:" heading. Always show the user the dry-run diff
+   (config changes **and** cache removals) before applying unless they already
    approved in the interview.
 
-5. **Report.** Summarize each change (`name: old -> new`) and remind the user to
-   restart opencode so the new plugin versions load.
+5. **Report.** Summarize each change (`name: old -> new`), list the cache dirs
+   that were removed (or note that cleanup was skipped), and remind the user to
+   restart opencode so the new plugin versions re-resolve and load.
 
 ## Behavior Rules
 
@@ -79,12 +101,24 @@ pins on entries that already exist in the `"plugin"` array.
 - **Prereleases excluded by default.** Beta/rc versions (e.g. `1.2.3-beta`) are
   never selected unless `--prerelease` is passed. The cooldown interview only
   concerns release age, not stability.
+- **Clear cache only for bumped plugins.** Every cached version of a plugin
+  whose pin changed is removed from `~/.cache/opencode/packages` (scoped
+  packages nest under `<@scope>/`). Plugins that were not bumped are left
+  untouched, even if old versions accumulate — this targets the stale-fallback
+  failure mode without disturbing working installs. Pass `--no-cache-clean` to
+  opt out. Cache cleanup runs only in `--yes` mode; the dry run reports what
+  *would* be removed.
 
 ## Edge Cases
 
 - No `"plugin"` array, or empty → report "nothing to update" and stop.
 - No version is old enough under cooldown → that plugin is left untouched.
 - `npm view`/registry unreachable → report the network error; do not guess versions.
+- Cache dir absent, or no cached version exists for a bumped plugin → the helper
+  reports "No stale cache entries found for bumped plugins" and continues; there
+  is simply nothing to remove.
+- A cache dir fails to delete (permissions, busy) → the error is reported for
+  that one dir; the config write and other removals still succeed.
 
 ## Manual Fallback
 
@@ -97,5 +131,13 @@ npm view <pkg> dist-tags --json # { latest: "..." }
 
 Pick the newest version whose publish time is `<= now - cooldownDays*86400000`,
 compare with `semver`, and edit `opencode.json` preserving 2-space indentation
-and the trailing newline. Prefer the helper — it handles ordering, scoped names,
-and idempotent writes.
+and the trailing newline. Then remove the stale cache for each bumped plugin so
+opencode re-resolves fresh:
+
+```bash
+rm -rf ~/.cache/opencode/packages/<name>@*              # unscoped
+rm -rf ~/.cache/opencode/packages/<@scope>/<name>@*     # scoped
+```
+
+Prefer the helper — it handles ordering, scoped names, idempotent writes, and
+cache cleanup together.

@@ -37,4 +37,4 @@ skills update
 
 | Skill | Purpose |
 |-------|---------|
-| [`update-opencode-plugins`](skills/update-opencode-plugins/) | Bump `name@version` entries in `opencode.json` to the latest npm release, with an optional 7-day cooldown so too-fresh versions are skipped. |
+| [`update-opencode-plugins`](skills/update-opencode-plugins/) | Bump `name@version` entries in `opencode.json` to the latest npm release, with an optional 7-day cooldown so too-fresh versions are skipped, and clear the stale plugin cache at `~/.cache/opencode/packages` so opencode never falls back to an older cached version. |

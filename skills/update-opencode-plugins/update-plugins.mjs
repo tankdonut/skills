@@ -14,10 +14,15 @@
 //
 // Exit codes: 0 success (changes written or nothing to do), 1 on error.
 
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import path from "node:path";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const REGISTRY = "https://registry.npmjs.org/";
+// Where opencode stores installed plugin packages, keyed "<name>@<version>"
+// (scoped packages nest one level: "<@scope>/<name>@<version>").
+const DEFAULT_CACHE = path.join(homedir(), ".cache", "opencode", "packages");
 
 function printHelp() {
   process.stdout.write(`Usage: node update-plugins.mjs --config <path> [--cooldown <days>] [--yes]
@@ -25,19 +30,23 @@ function printHelp() {
   --config <path>    Path to an opencode.json containing a "plugin" array.
   --cooldown <days>  Only upgrade to the newest version at least <days> days old. Default 0 (latest).
   --prerelease       Allow prerelease versions (e.g. 1.2.3-beta). Excluded by default.
+  --cache <dir>      Plugin cache dir to clear of stale versions. Default ~/.cache/opencode/packages.
+  --no-cache-clean   Skip cache cleanup (leave stale plugin versions in place).
   --yes              Write changes to disk. Without it, only print a diff.
   -h, --help         Show this help.
 `);
 }
 
 function parseArgs(argv) {
-  const out = { config: null, cooldown: 0, yes: false, prerelease: false };
+  const out = { config: null, cooldown: 0, yes: false, prerelease: false, cache: DEFAULT_CACHE, noCacheClean: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--config") out.config = argv[++i];
     else if (a === "--cooldown") out.cooldown = Number(argv[++i]);
     else if (a === "--yes") out.yes = true;
     else if (a === "--prerelease") out.prerelease = true;
+    else if (a === "--cache") out.cache = argv[++i];
+    else if (a === "--no-cache-clean") out.noCacheClean = true;
     else if (a === "-h" || a === "--help") {
       printHelp();
       process.exit(0);
@@ -128,6 +137,27 @@ function detectIndent(src) {
   return m ? m[1].length : 2;
 }
 
+// List cached install dirs for a plugin name (any version). name may be
+// "@scope/pkg" or "pkg". Scoped names live one level deep under "<@scope>/".
+// Returns absolute paths like "<cache>/<name>@<ver>" or
+// "<cache>/<@scope>/<base>@<ver>". Empty array if the dir is absent.
+function cacheEntriesFor(cacheDir, name) {
+  let dir = cacheDir;
+  let base = name;
+  if (name.startsWith("@")) {
+    const slash = name.indexOf("/");
+    if (slash > 0) {
+      dir = path.join(cacheDir, name.slice(0, slash));
+      base = name.slice(slash + 1);
+    }
+  }
+  if (!existsSync(dir)) return [];
+  const prefix = base + "@";
+  return readdirSync(dir)
+    .filter((e) => e.startsWith(prefix) && e !== base)
+    .map((e) => path.join(dir, e));
+}
+
 async function main() {
   const opts = parseArgs(process.argv.slice(2));
 
@@ -190,10 +220,28 @@ async function main() {
     return;
   }
 
+  // Stale plugin cache: opencode caches every installed plugin version under
+  // <cache>/<name>@<ver>. When the pin in opencode.json changes but the new
+  // version isn't fetched yet, opencode falls back to whatever older version
+  // is still cached -> the loaded plugin disagrees with the config schema and
+  // every agent silently reverts to defaults. Clearing all cached versions of
+  // each bumped plugin forces a clean re-resolve on next start.
+  const staleCacheDirs = opts.noCacheClean
+    ? []
+    : [...new Set(changes.flatMap((c) => cacheEntriesFor(opts.cache, c.name)))];
+
   const tag = opts.cooldown > 0 ? ` (cooldown ${opts.cooldown}d)` : " (latest)";
   console.log(`Proposed changes${tag}:`);
   for (const c of changes) {
     console.log(`  ${c.name}: ${c.current} -> ${c.target}`);
+  }
+  if (opts.noCacheClean) {
+    console.log("\nCache cleanup skipped (--no-cache-clean).");
+  } else if (staleCacheDirs.length > 0) {
+    console.log("\nStale cache dirs to remove:");
+    for (const d of staleCacheDirs) console.log(`  ${d}`);
+  } else {
+    console.log("\nNo stale cache entries found for bumped plugins.");
   }
 
   if (!opts.yes) {
@@ -208,7 +256,18 @@ async function main() {
   );
   const out = JSON.stringify(cfg, null, indent) + (hadTrailingNewline ? "\n" : "");
   writeFileSync(opts.config, out);
-  console.log(`Wrote ${opts.config}. Restart opencode to load new plugin versions.`);
+  console.log(`Wrote ${opts.config}.`);
+
+  for (const d of staleCacheDirs) {
+    try {
+      rmSync(d, { recursive: true, force: true });
+      console.log(`Removed stale cache ${d}`);
+    } catch (e) {
+      console.error(`Failed to remove ${d}: ${e.message}`);
+    }
+  }
+
+  console.log("Restart opencode to re-resolve and load the new plugin versions.");
 }
 
 main().catch((e) => {
