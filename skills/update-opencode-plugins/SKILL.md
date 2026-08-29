@@ -1,5 +1,6 @@
 ---
 name: update-opencode-plugins
+license: MIT
 description: Use when updating, upgrading, or bumping opencode plugin versions in opencode.json (user-level at ~/.config/opencode/opencode.json or project-level at .opencode/opencode.json), including resolving the latest npm release with an optional 7-day cooldown that skips too-fresh versions, and clearing the stale plugin cache at ~/.cache/opencode/packages so opencode never falls back to an older cached version.
 ---
 

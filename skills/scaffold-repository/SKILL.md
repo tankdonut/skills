@@ -1,5 +1,6 @@
 ---
 name: scaffold-repository
+license: MIT
 description: Use when creating a brand-new repository from scratch — starting a new project, bootstrapping a repo skeleton, or initializing a fresh repository with house conventions (Python/uv or Go, pre-commit, renovate, AGENTS.md, CI).
 ---
 
