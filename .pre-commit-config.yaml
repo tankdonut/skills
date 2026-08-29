@@ -13,6 +13,17 @@ repos:
     hooks:
       - id: markdownlint-cli2
 
+  - repo: https://github.com/rhysd/actionlint
+    rev: v1.7.12
+    hooks:
+      - id: actionlint-system
+
+  - repo: https://github.com/cisco-ai-defense/skill-scanner
+    rev: "2.0.13"
+    hooks:
+      - id: skill-scanner
+        args: [--scan-all]
+
   - repo: local
     hooks:
       - id: node-check

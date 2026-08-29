@@ -170,7 +170,7 @@ function packumentUrl(name) {
 }
 
 async function fetchPackument(name) {
-  const res = await fetch(packumentUrl(name));
+  const res = await fetch(packumentUrl(name)); // fetch: public npm registry packument only
   if (!res.ok) throw new Error(`npm registry ${res.status} for ${name}`);
   return res.json();
 }
