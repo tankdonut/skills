@@ -1,7 +1,7 @@
 ---
 name: update-opencode-plugins
 license: MIT
-description: Use when updating, upgrading, or bumping opencode plugin versions in opencode.json (user-level at ~/.config/opencode/opencode.json or project-level at .opencode/opencode.json), including resolving the latest npm release with an optional 7-day cooldown that skips too-fresh versions, clearing the stale plugin cache at ~/.cache/opencode/packages, and pre-installing each bumped plugin into that cache with a fully controlled npm environment (ambient NPM_CONFIG_* stripped and overridden) so opencode loads exactly the pinned version.
+description: Use when updating, upgrading, or bumping opencode plugin versions in opencode.json (user-level at ~/.config/opencode/opencode.json or project-level at .opencode/opencode.json), including resolving the latest npm release with an optional 7-day cooldown that skips too-fresh versions, clearing the stale plugin cache at ~/.cache/opencode/packages, pre-installing each bumped plugin into that cache with a fully controlled npm environment (ambient NPM_CONFIG_* stripped and overridden) so opencode loads exactly the pinned version, and briefing the user on the GitHub release notes between the old and new pins.
 ---
 
 # Update OpenCode Plugin Versions
@@ -35,6 +35,14 @@ existing `<cache>/<entry>/node_modules/<name>` dir skips its install entirely �
 so the pre-installed dirs are used verbatim on next start: no network access,
 no re-resolve, no ambient-env influence.
 
+The run ends with a **release-notes briefing**: for every bump, the helper
+fetches the package's GitHub releases in the `(old, new]` range and prints
+titles, full bodies, and full-notes links — with explicit callouts for
+MAJOR bumps and bodies mentioning breaking changes. The briefing never gates
+the upgrade and never fails the run; when GitHub has nothing (no repository
+link, non-GitHub host, API failure, no matching tags) it degrades to a
+constructible compare URL.
+
 ## Constants
 
 | Constant | Value |
@@ -44,7 +52,7 @@ no re-resolve, no ambient-env influence.
 | Plugin cache | `~/.cache/opencode/packages` |
 | npm registry | `https://registry.npmjs.org/<package>` |
 | Default cooldown | 7 days |
-| Autonomous defaults | scope: every existing config; cooldown: 7 days; stable only; cache clean on; pre-install on |
+| Autonomous defaults | scope: every existing config; cooldown: 7 days; stable only; cache clean on; pre-install on; briefing on |
 
 ## When to Use
 
@@ -75,6 +83,7 @@ non-interactive.
 | `--no-cache-clean` | Leave the plugin cache alone. Only when the user explicitly asks. |
 | `--no-install` | Skip pre-installing bumped plugins into the cache; opencode installs them itself on restart, under whatever `NPM_CONFIG_*` env it was launched with. Only when the user explicitly asks. |
 | `--registry <url>` | npm registry used for BOTH version resolution and pre-install (they can never disagree). Default `https://registry.npmjs.org`. |
+| `--no-briefing` | Skip the release-notes briefing at the end of the run. Only when the user explicitly asks. |
 
 **Autonomy contract:** when `--default` is present, or the flags already fix
 every decision (scope + cooldown), NEVER use the `question` tool — decide from
@@ -166,10 +175,13 @@ Only interview for decisions that are still unresolved in an interactive run.
 
 5. **Report.** Summarize each change per config (`name: old -> new`), list the
    cache dirs that were pre-installed and the ones that were removed (or note
-   that cleanup / install was skipped), remind the user to restart opencode so
-   the new plugin versions load (pre-installed ones come straight from the
-   cache fast path), and — for flag-driven runs — state the values that were
-   decided by flag or by `--default` (scope, cooldown).
+   that cleanup / install was skipped), and condense the helper's
+   release-notes briefing for the user — lead with any `⚠ MAJOR bump` or
+   `⚠ breaking changes` callouts, then a line or two per plugin. Remind the
+   user to restart opencode so the new plugin versions load (pre-installed
+   ones come straight from the cache fast path), and — for flag-driven runs —
+   state the values that were decided by flag or by `--default` (scope,
+   cooldown).
 
 ## Behavior Rules
 
@@ -216,6 +228,11 @@ Only interview for decisions that are still unresolved in an interactive run.
   `<name>@<target>` dir is reused (fast-path skip) or cleanly reinstalled,
   never removed by the stale-cache sweep; only *other* versions of bumped
   plugins are removed.
+- **Brief, never gate.** The release-notes briefing runs after the update (or
+  at the end of a dry run) and is purely informational: it never blocks, never
+  asks, never fails the run, and is skipped entirely with `--no-briefing`.
+  Tag matching is best-effort (`v1.2.3`, `1.2.3`, `pkg@1.2.3` styles); release
+  bodies are included in full with a full-notes link.
 
 ## Edge Cases
 
@@ -239,6 +256,11 @@ Only interview for decisions that are still unresolved in an interactive run.
   reinstalls it cleanly; the fast-path marker `node_modules/<name>` is what
   counts as "installed", so an install that finished without the marker is
   treated as failed and retried from scratch.
+- Briefing has no repository link on npm, a non-GitHub repository, no matching
+  release tags, or the GitHub API fails (e.g. anonymous rate limit, 60 req/h)
+  → the section degrades to a one-line notice plus a compare URL
+  (`github.com/<slug>/compare/v<old>...v<new>`, tag prefix guessed); the run
+  itself is unaffected.
 
 ## Manual Fallback
 

@@ -5,7 +5,7 @@
 //   node update-plugins.mjs [--config <path> | --user | --project | --both]
 //                           [--cooldown <days> | --latest] [--default] [--yes]
 //                           [--prerelease] [--cache <dir>] [--no-cache-clean]
-//                           [--no-install] [--registry <url>]
+//                           [--no-install] [--registry <url>] [--no-briefing]
 //
 // Scope:
 //   --config <path>   one specific opencode.json
@@ -36,6 +36,13 @@
 //     pre-installed dirs are used verbatim on next start. Layout parity is
 //     exact: package.json + package-lock.json + node_modules/<name>. An
 //     install failure aborts the run before any config write or cache removal.
+//   - Release-notes briefing (default, skippable with --no-briefing): after
+//     applying (or at the end of a dry run), prints what changed between the
+//     old and new pin using the package's GitHub releases — titles, full
+//     bodies, full-notes links, MAJOR-bump and breaking-change callouts.
+//     Best-effort only: no repository / non-GitHub / API failure / no matching
+//     releases degrade to notices with a compare URL; the briefing never gates
+//     the upgrade and never fails the run.
 //
 // Exit codes: 0 success (changes written or nothing to do), 1 on error
 // (bad arguments, no config found, unreadable/unparseable config, failed
@@ -82,6 +89,7 @@ function printHelp() {
   --no-cache-clean   Skip cache cleanup (leave stale plugin versions in place).
   --no-install       Skip pre-installing bumped plugins into the cache; opencode installs them
                      itself on restart, subject to whatever NPM_CONFIG_* env it was launched with.
+  --no-briefing      Skip the release-notes briefing (GitHub releases between old and new pins).
   --registry <url>   npm registry used for BOTH version resolution and pre-install.
                      Default https://registry.npmjs.org.
   --yes              Write changes to disk. Without it, only print a diff.
@@ -105,6 +113,7 @@ function parseArgs(argv) {
     cache: DEFAULT_CACHE,
     noCacheClean: false,
     noInstall: false,
+    noBriefing: false,
     registry: REGISTRY,
     defaultMode: false,
   };
@@ -143,6 +152,7 @@ function parseArgs(argv) {
     else if (a === "--cache") out.cache = argv[++i];
     else if (a === "--no-cache-clean") out.noCacheClean = true;
     else if (a === "--no-install") out.noInstall = true;
+    else if (a === "--no-briefing") out.noBriefing = true;
     else if (a === "--registry") {
       out.registry = argv[++i];
       if (!out.registry) fail("--registry requires a URL.");
@@ -333,6 +343,137 @@ function installPlugin(cacheDir, name, version, env) {
   return { dir, skipped: false };
 }
 
+// --- Release-notes briefing -------------------------------------------------
+// Best-effort, never gates and never fails the run: after (or while dry-run
+// previewing) an upgrade, summarize what changed between the old and new pin
+// using the package's GitHub releases. Fallbacks keep the user reviewable
+// even when GitHub has nothing: a compare URL is always constructible.
+
+// "git+https://github.com/o/r.git" | "github:o/r" | ... -> "o/r", else null.
+function githubSlug(repoUrl) {
+  if (typeof repoUrl !== "string" || repoUrl === "") return null;
+  const m = repoUrl.match(/github\.com[/:]([^/]+)\/([^/.#?]+)/i);
+  return m ? `${m[1]}/${m[2]}` : null;
+}
+
+// "v1.2.3" | "1.2.3" | "pkg@1.2.3" | "pkg-v1.2.3" -> "1.2.3" (best effort).
+function tagVersion(tag) {
+  const m = String(tag).match(/(\d+\.\d+\.\d+(?:[-+][\w.+-]+)?)$/);
+  return m ? m[1] : null;
+}
+
+function majorOf(v) {
+  const n = Number(String(v).split(".")[0]);
+  return Number.isFinite(n) ? n : null;
+}
+
+async function fetchGithubReleases(slug) {
+  // fetch: public GitHub releases API only (read-only, anonymous)
+  const url = `https://api.github.com/repos/${slug}/releases?per_page=100`;
+  const res = await fetch(url, { headers: { Accept: "application/vnd.github+json" } }); // fetch: GitHub API, fixed host
+  if (!res.ok) throw new Error(`GitHub API ${res.status} for ${slug}`);
+  return res.json();
+}
+
+// Structured briefing for one change: { header, lines }. The header carries
+// the scan-critical metadata (release count, MAJOR, breaking mentions) so a
+// wall of releases stays navigable; lines render releases as bullets with
+// blank-line separation, or fallback notices with a compare URL.
+async function briefingFor(change, opts) {
+  const unpinned = change.current === "(unpinned)";
+  const majorBump =
+    !unpinned &&
+    majorOf(change.target) !== null &&
+    majorOf(change.current) !== null &&
+    majorOf(change.target) > majorOf(change.current);
+  const extras = [];
+  if (majorBump) extras.push("⚠ MAJOR bump — review before restart");
+
+  const slug = githubSlug(change.repoUrl);
+  const base = `${change.name}: ${change.current} -> ${change.target}`;
+  const compareBase = unpinned ? null : `https://github.com/${slug ?? "OWNER/REPO"}/compare/v${change.current}...v${change.target}`;
+
+  if (!slug) {
+    const where = change.repoUrl ? `repository is not GitHub (${change.repoUrl})` : "no repository link on npm";
+    return {
+      header: base,
+      lines: [`  ✗ notes unavailable: ${where}; review the changelog manually`],
+    };
+  }
+
+  let releases;
+  try {
+    releases = await fetchGithubReleases(slug);
+  } catch (e) {
+    const lines = [`  ✗ notes unavailable: ${e.message}`];
+    if (compareBase) lines.push(`  → compare: ${compareBase} (tag prefix guessed)`);
+    return { header: base, lines };
+  }
+
+  const inRange = [];
+  for (const r of releases) {
+    if (r.draft) continue;
+    if (r.prerelease && !opts.prerelease) continue;
+    const v = tagVersion(r.tag_name);
+    if (!v) continue;
+    if (!unpinned && cmpVersion(v, change.current) <= 0) continue;
+    if (cmpVersion(v, change.target) > 0) continue;
+    inRange.push(r);
+  }
+
+  if (inRange.length === 0) {
+    const lines = [`  ✗ no GitHub releases matched the version range`];
+    if (compareBase) lines.push(`  → compare: ${compareBase} (tag prefix guessed)`);
+    return { header: base, lines };
+  }
+
+  inRange.sort((a, b) => cmpVersion(tagVersion(a.tag_name), tagVersion(b.tag_name)));
+  const breakingCount = inRange.filter((r) => /breaking/i.test(String(r.body ?? ""))).length;
+  extras.unshift(`${inRange.length} release${inRange.length === 1 ? "" : "s"}`);
+  if (breakingCount > 0) extras.push(`⚠ breaking changes in ${breakingCount}`);
+
+  const lines = [];
+  for (const r of inRange) {
+    const name = String(r.name ?? "").trim();
+    const label = name && name !== r.tag_name ? `${r.tag_name} — ${name}` : r.tag_name;
+    lines.push("");
+    lines.push(`  ◆ ${label}${r.prerelease ? " (prerelease)" : ""}`);
+    const body = String(r.body ?? "").trim();
+    for (const l of body.split("\n")) {
+      if (l.trim() !== "") lines.push(`    ${l.trim()}`);
+    }
+    lines.push(`    full notes: ${r.html_url}`);
+  }
+  return { header: base + extras.map((e) => ` · ${e}`).join(""), lines };
+}
+
+// Deduplicated briefing across all planned changes (same plugin may appear in
+// both configs). Never throws; per-plugin failures degrade to notices.
+async function printBriefing(actionable, opts) {
+  const seen = new Map();
+  for (const p of actionable) {
+    for (const c of p.changes) seen.set(`${c.name}|${c.current}|${c.target}`, c);
+  }
+  if (seen.size === 0) return;
+  const rule = "─".repeat(62);
+  console.log("\nRelease-notes briefing");
+  console.log("═".repeat(62));
+  for (const c of seen.values()) {
+    try {
+      const b = await briefingFor(c, opts);
+      console.log("");
+      console.log(b.header);
+      console.log(rule);
+      for (const line of b.lines) console.log(line);
+    } catch (e) {
+      console.log("");
+      console.log(`${c.name}: ${c.current} -> ${c.target}`);
+      console.log(rule);
+      console.log(`  ✗ notes unavailable: ${e.message}`);
+    }
+  }
+}
+
 // Resolve which config files to process from --config or the scope flags.
 // --both (and --default's implied scope) keep every config that exists and
 // report the missing ones; an explicit single scope that is missing is an
@@ -406,12 +547,16 @@ async function planConfig(configPath, opts) {
     if (entry === targetEntry) continue;
     if (current && cmpVersion(target, current) <= 0) continue; // never downgrade
 
+    const repoField = pkg.repository;
+    const repoUrl = typeof repoField === "string" ? repoField : repoField?.url;
+
     changes.push({
       entry,
       targetEntry,
       name,
       current: current ?? "(unpinned)",
       target,
+      repoUrl,
     });
   }
 
@@ -501,6 +646,7 @@ async function main() {
 
   if (actionable.length > 0 && !opts.yes) {
     console.log("\nDry run. Re-run with --yes to apply.");
+    if (!opts.noBriefing) await printBriefing(actionable, opts);
     if (anyError) process.exit(1);
     return;
   }
@@ -567,6 +713,7 @@ async function main() {
   } else {
     console.log("\nRestart opencode to re-resolve and load the new plugin versions.");
   }
+  if (!opts.noBriefing) await printBriefing(actionable, opts);
   if (anyError) process.exit(1);
 }
 
