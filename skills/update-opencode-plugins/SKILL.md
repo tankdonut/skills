@@ -1,7 +1,7 @@
 ---
 name: update-opencode-plugins
 license: MIT
-description: Use when updating, upgrading, or bumping opencode plugin versions in opencode.json (user-level at ~/.config/opencode/opencode.json or project-level at .opencode/opencode.json), including resolving the latest npm release with an optional 7-day cooldown that skips too-fresh versions, and clearing the stale plugin cache at ~/.cache/opencode/packages so opencode never falls back to an older cached version.
+description: Use when updating, upgrading, or bumping opencode plugin versions in opencode.json (user-level at ~/.config/opencode/opencode.json or project-level at .opencode/opencode.json), including resolving the latest npm release with an optional 7-day cooldown that skips too-fresh versions, clearing the stale plugin cache at ~/.cache/opencode/packages, and pre-installing each bumped plugin into that cache with a fully controlled npm environment (ambient NPM_CONFIG_* stripped and overridden) so opencode loads exactly the pinned version.
 ---
 
 # Update OpenCode Plugin Versions
@@ -21,6 +21,20 @@ copy — which can be older than the pin and disagree with the current config
 schema, breaking every agent. Clearing the cache for bumped plugins forces a
 clean re-resolve on next start.
 
+Finally, the skill takes **full control of plugin installation**. opencode
+installs plugins with npm's own machinery in-process and feeds its entire
+environment into npm's config loader (`packages/core/src/npm-config.ts` in
+anomalyco/opencode), so ambient `NPM_CONFIG_*` variables — e.g. a
+`NPM_CONFIG_USERCONFIG` npmrc carrying `min-release-age`, a registry mirror,
+proxies — silently veto or redirect installs after the skill has already
+pinned a version. The helper therefore pre-installs every bumped
+`name@version` into the plugin cache itself, in a sanitized environment where
+every `NPM_CONFIG_*` var is stripped and explicit values are set. opencode's
+package loader (`packages/core/src/npm.ts`, `Npm.add`) has a fast path — an
+existing `<cache>/<entry>/node_modules/<name>` dir skips its install entirely —
+so the pre-installed dirs are used verbatim on next start: no network access,
+no re-resolve, no ambient-env influence.
+
 ## Constants
 
 | Constant | Value |
@@ -30,7 +44,7 @@ clean re-resolve on next start.
 | Plugin cache | `~/.cache/opencode/packages` |
 | npm registry | `https://registry.npmjs.org/<package>` |
 | Default cooldown | 7 days |
-| Autonomous defaults | scope: every existing config; cooldown: 7 days; stable only; cache clean on |
+| Autonomous defaults | scope: every existing config; cooldown: 7 days; stable only; cache clean on; pre-install on |
 
 ## When to Use
 
@@ -38,8 +52,10 @@ clean re-resolve on next start.
 - A plugin is misbehaving and a stale or too-new version is suspected.
 - Routine maintenance of an opencode config.
 
-Do NOT use for installing or removing plugins — only for changing `@version`
-pins on entries that already exist in the `"plugin"` array.
+Do NOT use for adding or removing plugin **entries** — only for changing
+`@version` pins on entries that already exist in the `"plugin"` array.
+(Pre-installing the bumped versions into the cache is part of the bump, not a
+new-entry install.)
 
 ## Flags
 
@@ -50,13 +66,15 @@ non-interactive.
 
 | Flag | Meaning |
 |------|---------|
-| `--default` | Non-interactive: anything the invocation did not decide takes the documented default — scope = every existing config, cooldown = 7 days, stable releases only, cache cleanup on. |
+| `--default` | Non-interactive: anything the invocation did not decide takes the documented default — scope = every existing config, cooldown = 7 days, stable releases only, cache cleanup on, pre-install on. |
 | `--yes` | Apply immediately; skip the dry-run confirmation gate. The helper still prints the diff as it writes. |
 | `--latest` | Cooldown 0 — absolute newest stable release. |
 | `--cooldown <days>` | Explicit cooldown in days. |
 | `--user` / `--project` / `--both` | Explicit scope. `--both` processes every config that exists and reports missing ones. |
 | `--prerelease` | Include beta/rc versions. Only when the user explicitly asks. |
 | `--no-cache-clean` | Leave the plugin cache alone. Only when the user explicitly asks. |
+| `--no-install` | Skip pre-installing bumped plugins into the cache; opencode installs them itself on restart, under whatever `NPM_CONFIG_*` env it was launched with. Only when the user explicitly asks. |
+| `--registry <url>` | npm registry used for BOTH version resolution and pre-install (they can never disagree). Default `https://registry.npmjs.org`. |
 
 **Autonomy contract:** when `--default` is present, or the flags already fix
 every decision (scope + cooldown), NEVER use the `question` tool — decide from
@@ -115,18 +133,43 @@ Only interview for decisions that are still unresolved in an interactive run.
    - `--no-cache-clean` — skip cache cleanup entirely. Use only if the user
      explicitly asks to leave the cache alone.
 
-   The dry run lists the exact cache dirs it would remove under a
-   "Stale cache dirs to remove:" heading. In interactive runs, show the user
-   the dry-run diff (config changes **and** cache removals) before applying
-   unless they already approved in the interview. With `--yes` (or prior
-   approval) apply directly — the helper prints the same diff as it writes,
-   and the report carries it.
+    The dry run lists the exact cache dirs it would remove under a
+    "Stale cache dirs to remove:" heading and the exact dirs it would
+    pre-install into under a "Pre-install into cache" heading. In interactive
+    runs, show the user the dry-run diff (config changes **and** cache
+    removals) before applying unless they already approved in the interview.
+    With `--yes` (or prior approval) apply directly — the helper prints the
+    same diff as it writes, and the report carries it.
+
+    **Pre-install is on by default** (`--yes` mode only). Before writing any
+    config or removing any cache dir, the helper installs every bumped
+    `name@version` into the plugin cache — additive only, so a failure aborts
+    the run with nothing changed. The npm child runs in a controlled
+    environment: every ambient `NPM_CONFIG_*` / `npm_config_*` var is stripped
+    (including `NPM_CONFIG_USERCONFIG` indirection and auth material),
+    userconfig/globalconfig point at empty temp files (npm rejects one file
+    loaded as both roles — use two), and these are set explicitly:
+
+    | Env var | Value | Why |
+    |---------|-------|-----|
+    | `NPM_CONFIG_REGISTRY` | the `--registry` value (default `https://registry.npmjs.org`) | install from the same registry versions were resolved from |
+    | `NPM_CONFIG_MIN_RELEASE_AGE` | `0` | the cooldown above already decided eligibility; ambient npmrc must not re-veto |
+    | `NPM_CONFIG_IGNORE_SCRIPTS` | `true` | parity with opencode's installer, which hardcodes `ignoreScripts: true` |
+    | `NPM_CONFIG_UPDATE_NOTIFIER` / `_FUND` / `_AUDIT` | `false` | noise off |
+
+    npm's precedence is env > project `.npmrc` > user npmrc > global, so the
+    explicit env values cannot be overridden by any config file found from the
+    install dir upward. The produced dir matches opencode's own
+    Arborist-based installer in shape — `package.json` +
+    `package-lock.json` + `node_modules/<name>` — so opencode's cache fast
+    path (`Npm.add`) uses it verbatim with no network access on restart.
 
 5. **Report.** Summarize each change per config (`name: old -> new`), list the
-   cache dirs that were removed (or note that cleanup was skipped), remind the
-   user to restart opencode so the new plugin versions re-resolve and load,
-   and — for flag-driven runs — state the values that were decided by flag or
-   by `--default` (scope, cooldown).
+   cache dirs that were pre-installed and the ones that were removed (or note
+   that cleanup / install was skipped), remind the user to restart opencode so
+   the new plugin versions load (pre-installed ones come straight from the
+   cache fast path), and — for flag-driven runs — state the values that were
+   decided by flag or by `--default` (scope, cooldown).
 
 ## Behavior Rules
 
@@ -155,6 +198,24 @@ Only interview for decisions that are still unresolved in an interactive run.
   failure mode without disturbing working installs. Pass `--no-cache-clean` to
   opt out. Cache cleanup runs only in `--yes` mode; the dry run reports what
   *would* be removed.
+- **Install before any write.** With pre-install on, every bumped version is
+  installed into the cache *first*; only after all installs succeed (across
+  every config in scope, deduplicated by `name@version`) are configs written
+  and stale dirs removed. Any install failure aborts the run with zero
+  changes — a working setup is never traded for a pin opencode can't fetch
+  under its ambient env.
+- **Own the install environment.** The npm child never sees ambient
+  `NPM_CONFIG_*`: they are stripped, userconfig/globalconfig are redirected to
+  empty temp files, and registry / `min-release-age=0` / `ignore-scripts` are
+  set explicitly. `--registry` changes the resolution source and the install
+  source together so they can never disagree. Auth material (`NPM_TOKEN` and
+  any token-carrying `npm_config_*` vars) is stripped too — private registries
+  requiring authentication are out of scope; the helper resolves from
+  anonymous packument fetches.
+- **Never treat a target dir as stale.** A cached — even partial —
+  `<name>@<target>` dir is reused (fast-path skip) or cleanly reinstalled,
+  never removed by the stale-cache sweep; only *other* versions of bumped
+  plugins are removed.
 
 ## Edge Cases
 
@@ -170,6 +231,14 @@ Only interview for decisions that are still unresolved in an interactive run.
   is simply nothing to remove.
 - A cache dir fails to delete (permissions, busy) → the error is reported for
   that one dir; the config write and other removals still succeed.
+- `npm` missing from PATH, or an install fails (network, yanked version) → the
+  run aborts before writing anything; the error names the plugin and the
+  cause. Fix and re-run, or use `--no-install` to fall back to opencode's own
+  install-on-restart.
+- A partial cache dir left by an earlier failed install → the helper wipes and
+  reinstalls it cleanly; the fast-path marker `node_modules/<name>` is what
+  counts as "installed", so an install that finished without the marker is
+  treated as failed and retried from scratch.
 
 ## Manual Fallback
 
@@ -190,5 +259,19 @@ rm -rf ~/.cache/opencode/packages/<name>@*              # unscoped
 rm -rf ~/.cache/opencode/packages/<@scope>/<name>@*     # scoped
 ```
 
-Prefer the helper — it handles ordering, scoped names, idempotent writes, and
-cache cleanup together.
+Then pre-install the bumped version into the cache with the same controlled
+npm environment the helper uses (two *distinct* empty npmrc files — npm
+rejects one file loaded as both userconfig and globalconfig):
+
+```bash
+: > /tmp/npmrc-user; : > /tmp/npmrc-global
+dir=~/.cache/opencode/packages/<name>@<version>          # scoped: .../<@scope>/<name>@<version>
+mkdir -p "$dir"
+printf '{"name":"opencode-plugin","private":true,"dependencies":{"<name>":"<version>"}}\n' > "$dir/package.json"
+NPM_CONFIG_USERCONFIG=/tmp/npmrc-user NPM_CONFIG_GLOBALCONFIG=/tmp/npmrc-global \
+NPM_CONFIG_REGISTRY=https://registry.npmjs.org NPM_CONFIG_MIN_RELEASE_AGE=0 \
+NPM_CONFIG_IGNORE_SCRIPTS=true npm install --omit=dev --ignore-scripts --prefix "$dir"
+```
+
+Prefer the helper — it handles ordering, scoped names, idempotent writes,
+cache cleanup, and the controlled install environment together.

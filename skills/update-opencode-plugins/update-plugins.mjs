@@ -5,6 +5,7 @@
 //   node update-plugins.mjs [--config <path> | --user | --project | --both]
 //                           [--cooldown <days> | --latest] [--default] [--yes]
 //                           [--prerelease] [--cache <dir>] [--no-cache-clean]
+//                           [--no-install] [--registry <url>]
 //
 // Scope:
 //   --config <path>   one specific opencode.json
@@ -20,20 +21,40 @@
 //     --latest is shorthand for --cooldown 0.
 //   - --default fills anything unset with the house defaults so the script can
 //     run autonomously: scope = --both, cooldown = 7 days, stable releases
-//     only, cache cleanup on. Explicit flags always win over --default.
+//     only, cache cleanup on, pre-install on. Explicit flags always win.
 //   - Prerelease versions (e.g. 1.2.3-beta) are excluded unless --prerelease.
 //   - Prints a diff of proposed changes. Pass --yes to write files in place
 //     and clear the stale plugin cache.
+//   - Pre-install (default, --yes mode only): before writing any config,
+//     installs every bumped name@version into the plugin cache with a fully
+//     controlled npm environment — every ambient NPM_CONFIG_* variable is
+//     stripped, userconfig/globalconfig are redirected to an empty file, and
+//     registry / min-release-age=0 / ignore-scripts are set explicitly — so
+//     this script, not the ambient npmrc, decides what gets installed.
+//     opencode's package loader (packages/core/src/npm.ts, Npm.add) skips its
+//     own install when <cache>/<entry>/node_modules/<name> already exists, so
+//     pre-installed dirs are used verbatim on next start. Layout parity is
+//     exact: package.json + package-lock.json + node_modules/<name>. An
+//     install failure aborts the run before any config write or cache removal.
 //
 // Exit codes: 0 success (changes written or nothing to do), 1 on error
-// (bad arguments, no config found, unreadable/unparseable config).
+// (bad arguments, no config found, unreadable/unparseable config, failed
+// pre-install).
 
-import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { execFileSync } from "node:child_process";
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
-const REGISTRY = "https://registry.npmjs.org/";
+const REGISTRY = "https://registry.npmjs.org";
 // Where opencode stores installed plugin packages, keyed "<name>@<version>"
 // (scoped packages nest one level: "<@scope>/<name>@<version>").
 const DEFAULT_CACHE = path.join(homedir(), ".cache", "opencode", "packages");
@@ -55,10 +76,14 @@ function printHelp() {
   --cooldown <days>  Only upgrade to the newest version at least <days> days old. Default 0 (latest).
   --latest           Shorthand for --cooldown 0 (absolute newest stable).
   --default          Non-interactive defaults for anything unset: scope = --both, cooldown = 7 days,
-                     stable releases only, cache cleanup on. Explicit flags win over --default.
+                     stable releases only, cache cleanup on, pre-install on. Explicit flags win.
   --prerelease       Allow prerelease versions (e.g. 1.2.3-beta). Excluded by default.
-  --cache <dir>      Plugin cache dir to clear of stale versions. Default ~/.cache/opencode/packages.
+  --cache <dir>      Plugin cache dir. Default ~/.cache/opencode/packages.
   --no-cache-clean   Skip cache cleanup (leave stale plugin versions in place).
+  --no-install       Skip pre-installing bumped plugins into the cache; opencode installs them
+                     itself on restart, subject to whatever NPM_CONFIG_* env it was launched with.
+  --registry <url>   npm registry used for BOTH version resolution and pre-install.
+                     Default https://registry.npmjs.org.
   --yes              Write changes to disk. Without it, only print a diff.
   -h, --help         Show this help.
 `);
@@ -79,6 +104,8 @@ function parseArgs(argv) {
     prerelease: false,
     cache: DEFAULT_CACHE,
     noCacheClean: false,
+    noInstall: false,
+    registry: REGISTRY,
     defaultMode: false,
   };
   const setScope = (s) => {
@@ -115,7 +142,11 @@ function parseArgs(argv) {
     else if (a === "--prerelease") out.prerelease = true;
     else if (a === "--cache") out.cache = argv[++i];
     else if (a === "--no-cache-clean") out.noCacheClean = true;
-    else if (a === "-h" || a === "--help") {
+    else if (a === "--no-install") out.noInstall = true;
+    else if (a === "--registry") {
+      out.registry = argv[++i];
+      if (!out.registry) fail("--registry requires a URL.");
+    } else if (a === "-h" || a === "--help") {
       printHelp();
       process.exit(0);
     } else {
@@ -164,13 +195,14 @@ function cmpVersion(a, b) {
   return 0;
 }
 
-function packumentUrl(name) {
+function packumentUrl(name, registry) {
+  const base = registry.endsWith("/") ? registry : registry + "/";
   // Encode slashes in scoped names; leading "@" is safe unencoded.
-  return REGISTRY + name.replace(/\//g, "%2F");
+  return base + name.replace(/\//g, "%2F");
 }
 
-async function fetchPackument(name) {
-  const res = await fetch(packumentUrl(name)); // fetch: public npm registry packument only
+async function fetchPackument(name, registry) {
+  const res = await fetch(packumentUrl(name, registry)); // fetch: configured npm registry only
   if (!res.ok) throw new Error(`npm registry ${res.status} for ${name}`);
   return res.json();
 }
@@ -228,6 +260,79 @@ function cacheEntriesFor(cacheDir, name) {
     .map((e) => path.join(dir, e));
 }
 
+// Build the fully controlled environment for the pre-install npm process.
+// opencode passes its whole process env into npm's config loader
+// (packages/core/src/npm-config.ts: env: { ...process.env }), so ambient
+// NPM_CONFIG_* values (a userconfig npmrc with min-release-age, registry
+// mirrors, proxies, tokens) silently shape plugin installs. To own the
+// installation we strip every npm config var and set explicit ones.
+// npm precedence: env > project .npmrc > user npmrc > global, so explicit
+// env values cannot be overridden by any config file found from cwd upward.
+function installEnv(registry, userNpmrc, globalNpmrc) {
+  const env = {};
+  for (const [k, v] of Object.entries(process.env)) {
+    if (/^npm_config_/i.test(k)) continue; // userconfig indirection, registry, proxies, min-release-age...
+    if (k === "NPM_TOKEN") continue; // never forward auth material to a possibly different registry
+    env[k] = v;
+  }
+  // Neutralize the user/global npmrc fallbacks: both point at empty files
+  // (npm rejects one file loaded as both roles), so nothing ambient can leak
+  // in even for keys we do not set explicitly.
+  env.NPM_CONFIG_USERCONFIG = userNpmrc;
+  env.NPM_CONFIG_GLOBALCONFIG = globalNpmrc;
+  env.NPM_CONFIG_REGISTRY = registry.replace(/\/+$/, "");
+  // The cooldown above already decided eligibility; npm must not re-veto.
+  env.NPM_CONFIG_MIN_RELEASE_AGE = "0";
+  // Parity with opencode's own installer: it hardcodes ignoreScripts: true.
+  env.NPM_CONFIG_IGNORE_SCRIPTS = "true";
+  // Noise off; nothing else may run or talk.
+  env.NPM_CONFIG_UPDATE_NOTIFIER = "false";
+  env.NPM_CONFIG_FUND = "false";
+  env.NPM_CONFIG_AUDIT = "false";
+  return env;
+}
+
+// Install name@version into the plugin cache with the controlled env,
+// producing the exact layout opencode's Arborist-based installer leaves:
+// <cache>/<name>@<version>/{package.json, package-lock.json, node_modules/}.
+// opencode's Npm.add fast path checks only <dir>/node_modules/<name>, so a
+// pre-installed dir is used verbatim with no network access on restart.
+// Returns { dir, skipped } — skipped when the fast-path marker already exists.
+function installPlugin(cacheDir, name, version, env) {
+  const dir = path.join(cacheDir, `${name}@${version}`);
+  const marker = path.join(dir, "node_modules", name);
+  if (existsSync(marker)) return { dir, skipped: true };
+
+  // Start clean: a marker-less dir is debris from a failed install (or junk);
+  // reinstalling into it could mix trees, so wipe it first.
+  rmSync(dir, { recursive: true, force: true });
+  mkdirSync(dir, { recursive: true });
+  const manifest = {
+    name: "opencode-plugin",
+    private: true,
+    dependencies: { [name]: version },
+  };
+  writeFileSync(path.join(dir, "package.json"), JSON.stringify(manifest, null, 2) + "\n");
+
+  // Intentional subprocess: fixed argv, no shell string, controlled env —
+  // the execFile-with-explicit-arguments form.
+  try {
+    execFileSync(
+      "npm",
+      ["install", "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund"],
+      { cwd: dir, env, encoding: "utf8", maxBuffer: 16 * 1024 * 1024 },
+    );
+  } catch (e) {
+    if (e.code === "ENOENT") throw new Error(`cannot run npm: ${e.message}`);
+    const detail = String(e.stderr ?? e.stdout ?? e.message).trim().split("\n").filter(Boolean).pop() ?? "";
+    throw new Error(`npm install ${name}@${version} failed: ${detail}`);
+  }
+  if (!existsSync(marker)) {
+    throw new Error(`npm install ${name}@${version} finished but ${marker} is missing`);
+  }
+  return { dir, skipped: false };
+}
+
 // Resolve which config files to process from --config or the scope flags.
 // --both (and --default's implied scope) keep every config that exists and
 // report the missing ones; an explicit single scope that is missing is an
@@ -249,9 +354,11 @@ function resolveConfigs(opts) {
   return found.map((k) => CONFIG_PATHS[k]);
 }
 
-// Process one config file. Returns "wrote" (changes applied), "clean"
-// (nothing to do), "dry" (diff printed, no write), or "error".
-async function processConfig(configPath, opts) {
+// Plan one config file: read, parse, and compute the change set WITHOUT
+// writing anything. Returns { configPath, status, changes, raw, cfg }:
+// status "error" (reported), "clean" (nothing to do), or "ok" (changes
+// pending). Prints the per-config report.
+async function planConfig(configPath, opts) {
   console.log(`== ${configPath} ==`);
 
   let raw;
@@ -259,7 +366,7 @@ async function processConfig(configPath, opts) {
     raw = readFileSync(configPath, "utf8");
   } catch (e) {
     console.error(`Cannot read ${configPath}: ${e.message}`);
-    return "error";
+    return { configPath, status: "error" };
   }
 
   let cfg;
@@ -267,12 +374,12 @@ async function processConfig(configPath, opts) {
     cfg = JSON.parse(raw);
   } catch (e) {
     console.error(`Invalid JSON in ${configPath}: ${e.message}`);
-    return "error";
+    return { configPath, status: "error" };
   }
 
   if (!Array.isArray(cfg.plugin) || cfg.plugin.length === 0) {
     console.log(`No "plugin" array in ${configPath}; nothing to do.`);
-    return "clean";
+    return { configPath, status: "clean" };
   }
 
   const changes = [];
@@ -283,7 +390,7 @@ async function processConfig(configPath, opts) {
 
     let pkg;
     try {
-      pkg = await fetchPackument(name);
+      pkg = await fetchPackument(name, opts.registry);
     } catch (e) {
       console.error(`skip ${name}: ${e.message}`);
       continue;
@@ -310,23 +417,37 @@ async function processConfig(configPath, opts) {
 
   if (changes.length === 0) {
     console.log("All plugins up to date.");
-    return "clean";
+    return { configPath, status: "clean" };
   }
 
   // Stale plugin cache: opencode caches every installed plugin version under
   // <cache>/<name>@<ver>. When the pin in opencode.json changes but the new
   // version isn't fetched yet, opencode falls back to whatever older version
   // is still cached -> the loaded plugin disagrees with the config schema and
-  // every agent silently reverts to defaults. Clearing all cached versions of
-  // each bumped plugin forces a clean re-resolve on next start.
+  // every agent silently reverts to defaults. With pre-install on, the new
+  // version is installed up front; clearing the old dirs is then pure hygiene.
+  // The TARGET dirs are excluded: a cached (or partial) <name>@<target> must
+  // never be counted as stale — deleting the dir we just installed (or are
+  // about to reuse via the fast path) would undo the pre-install.
+  const targetDirs = new Set(changes.map((c) => path.resolve(opts.cache, c.targetEntry)));
   const staleCacheDirs = opts.noCacheClean
     ? []
-    : [...new Set(changes.flatMap((c) => cacheEntriesFor(opts.cache, c.name)))];
+    : [...new Set(changes.flatMap((c) => cacheEntriesFor(opts.cache, c.name)))].filter(
+        (d) => !targetDirs.has(path.resolve(d)),
+      );
 
   const tag = opts.cooldown > 0 ? ` (cooldown ${opts.cooldown}d)` : " (latest)";
   console.log(`Proposed changes${tag}:`);
   for (const c of changes) {
     console.log(`  ${c.name}: ${c.current} -> ${c.target}`);
+  }
+  if (!opts.noInstall) {
+    console.log(
+      `\nPre-install into cache (controlled npm env: registry=${opts.registry}, min-release-age=0, ignore-scripts, userconfig neutralized):`,
+    );
+    for (const c of changes) {
+      console.log(`  ${path.join(opts.cache, c.targetEntry)}`);
+    }
   }
   if (opts.noCacheClean) {
     console.log("\nCache cleanup skipped (--no-cache-clean).");
@@ -337,11 +458,14 @@ async function processConfig(configPath, opts) {
     console.log("\nNo stale cache entries found for bumped plugins.");
   }
 
-  if (!opts.yes) {
-    console.log("\nDry run. Re-run with --yes to apply.");
-    return "dry";
-  }
+  return { configPath, status: "ok", changes, staleCacheDirs, raw, cfg };
+}
 
+// Apply a plan: write the config back (preserving key order, detected
+// indentation, trailing newline) and remove the stale cache dirs. Only runs
+// after every pre-install succeeded.
+function applyConfig(plan, opts) {
+  const { configPath, changes, staleCacheDirs, raw, cfg } = plan;
   const indent = " ".repeat(detectIndent(raw));
   const hadTrailingNewline = /\n$/.test(raw);
   cfg.plugin = cfg.plugin.map(
@@ -359,8 +483,6 @@ async function processConfig(configPath, opts) {
       console.error(`Failed to remove ${d}: ${e.message}`);
     }
   }
-
-  return "wrote";
 }
 
 async function main() {
@@ -368,16 +490,82 @@ async function main() {
   const configs = resolveConfigs(opts);
 
   let anyError = false;
-  let anyWrite = false;
+  const plans = [];
   for (let i = 0; i < configs.length; i++) {
     if (i > 0) console.log("");
-    const status = await processConfig(configs[i], opts);
-    if (status === "error") anyError = true;
-    if (status === "wrote") anyWrite = true;
+    const plan = await planConfig(configs[i], opts);
+    plans.push(plan);
+    if (plan.status === "error") anyError = true;
+  }
+  const actionable = plans.filter((p) => p.status === "ok");
+
+  if (actionable.length > 0 && !opts.yes) {
+    console.log("\nDry run. Re-run with --yes to apply.");
+    if (anyError) process.exit(1);
+    return;
   }
 
-  if (anyWrite) {
-    console.log("Restart opencode to re-resolve and load the new plugin versions.");
+  if (anyError) process.exitCode = 1;
+  if (actionable.length === 0) return;
+
+  // Pre-install phase: additive only — new dirs land beside the old cached
+  // versions, nothing is removed or rewritten yet. A failure here aborts
+  // before any config write or cache removal, so a working install is never
+  // traded for a pin opencode can't fetch under its ambient env.
+  let installed = false;
+  if (!opts.noInstall) {
+    const pending = new Map();
+    for (const p of actionable) for (const c of p.changes) pending.set(c.targetEntry, c);
+
+    const emptyUserNpmrc = path.join(tmpdir(), `update-opencode-plugins-user-npmrc-${process.pid}`);
+    const emptyGlobalNpmrc = path.join(tmpdir(), `update-opencode-plugins-global-npmrc-${process.pid}`);
+    writeFileSync(emptyUserNpmrc, "");
+    writeFileSync(emptyGlobalNpmrc, "");
+    try {
+      const env = installEnv(opts.registry, emptyUserNpmrc, emptyGlobalNpmrc);
+      const failed = [];
+      console.log("");
+      for (const c of pending.values()) {
+        try {
+          const { dir, skipped } = installPlugin(opts.cache, c.name, c.target, env);
+          console.log(
+            skipped
+              ? `Cache already has ${c.targetEntry} (${dir}); skipping install`
+              : `Pre-installed ${c.targetEntry} -> ${dir}`,
+          );
+        } catch (e) {
+          console.error(`Pre-install failed for ${c.targetEntry}: ${e.message}`);
+          failed.push(c.targetEntry);
+        }
+      }
+      if (failed.length > 0) {
+        console.error(
+          "\nAborted before writing anything: no configs changed, no cache dirs removed.\n" +
+            "Fix the failures above, or re-run with --no-install to let opencode install on restart.",
+        );
+        process.exit(1);
+      }
+      installed = true;
+    } finally {
+      for (const f of [emptyUserNpmrc, emptyGlobalNpmrc]) {
+        try {
+          rmSync(f, { force: true });
+        } catch {
+          // best effort: tmpdir housekeeping
+        }
+      }
+    }
+  }
+
+  for (let i = 0; i < actionable.length; i++) {
+    if (i > 0 || installed) console.log("");
+    applyConfig(actionable[i], opts);
+  }
+
+  if (installed) {
+    console.log("\nRestart opencode; it picks up the pre-installed versions directly (cache fast path, no re-resolve).");
+  } else {
+    console.log("\nRestart opencode to re-resolve and load the new plugin versions.");
   }
   if (anyError) process.exit(1);
 }
