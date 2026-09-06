@@ -9,6 +9,9 @@ top-level directory containing a `SKILL.md`.
 - One skill per directory under `skills/`: `skills/<name>/SKILL.md`.
 - Supporting scripts and reference docs live beside the `SKILL.md`.
 - No build step, no monorepo tooling — skills are plain files.
+- `scripts/` holds repo tooling: `global-skills.json` records the global
+  skill set and `restore-skills.mjs` replays it via the skills CLI. Keep the
+  JSON in sync with `skills ls -g` when installing or removing globals.
 
 ## Commands
 

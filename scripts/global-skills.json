@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "sources": [
+    { "source": "getsentry/skills", "skills": ["agents-md"] },
+    { "source": "tt-a1i/archify", "skills": ["archify"] },
+    { "source": "anthropics/knowledge-work-plugins", "skills": ["build-dashboard"] },
+    { "source": "github/awesome-copilot", "skills": ["create-agentsmd"] },
+    { "source": "vercel-labs/skills", "skills": ["find-skills"] },
+    { "source": "wshobson/agents", "skills": ["github-actions-templates"] },
+    { "source": "samber/cc-skills-golang", "skills": ["golang-performance"] },
+    { "source": "mattpocock/skills", "skills": ["setup-pre-commit"] },
+    { "source": "heygen-com/hyperframes", "skills": ["slideshow"] },
+    {
+      "source": "obra/superpowers",
+      "skills": ["requesting-code-review", "using-git-worktrees", "writing-skills"]
+    },
+    { "source": "tankdonut/skills", "skills": ["update-opencode-plugins"] }
+  ]
+}

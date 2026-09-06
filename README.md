@@ -33,6 +33,19 @@ Update after this repo changes:
 skills update
 ```
 
+## Restoring the global set
+
+`scripts/global-skills.json` records the full global (`~/.agents/skills/`)
+skill set. After a machine or container rebuild:
+
+```bash
+git clone https://github.com/tankdonut/skills.git && cd skills
+node scripts/restore-skills.mjs
+```
+
+The script installs the `skills` CLI if missing, then replays every source.
+Keep the JSON in sync with `skills ls -g` when adding or removing globals.
+
 ## Skills
 
 | Skill | Purpose |
