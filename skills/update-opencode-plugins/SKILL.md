@@ -65,6 +65,12 @@ Do NOT use for adding or removing plugin **entries** — only for changing
 (Pre-installing the bumped versions into the cache is part of the bump, not a
 new-entry install.)
 
+**Plugin-specific runbook:** `oh-my-openagent` (OmO) is the host plugin with
+a fast-moving beta channel and its own `~/.omo/` state tree — never bump it
+with a plain full-config run. Follow `oh-my-openagent.md` beside this file
+(temp-config scope isolation, `~/.omo` backup, post-restart verification,
+rollback).
+
 ## Flags
 
 The skill accepts flags in the invocation — e.g.
