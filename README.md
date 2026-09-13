@@ -43,7 +43,9 @@ git clone https://github.com/tankdonut/skills.git && cd skills
 node scripts/restore-skills.mjs
 ```
 
-The script installs the `skills` CLI if missing, then replays every source.
+The script installs the `skills` CLI if missing, then replays every source
+for OpenCode by default. Pass `--agent <name>` to target another agent, or
+`--agent '*'` for every detected agent.
 Keep the JSON in sync with `skills ls -g` when adding or removing globals.
 
 ## Skills

@@ -2,13 +2,14 @@
 // Reinstall the global (~/.agents/skills) skill set via the skills CLI.
 //
 // Usage:
-//   node scripts/restore-skills.mjs [--dry-run] [--help]
+//   node scripts/restore-skills.mjs [--dry-run] [--agent <name>] [--help]
 //
 // Behavior:
 //   - Reads the global skill set from scripts/global-skills.json and
-//     replays one `skills add <source> -g -y -a '*' --skill ...` per
-//     entry. Keep that file in sync with `skills ls -g` when installing
-//     or removing global skills.
+//     replays one `skills add <source> -g -y --agent <name> --skill ...`
+//     per entry. Keep that file in sync with `skills ls -g` when installing
+//     or removing global skills. --agent defaults to opencode; pass '*'
+//     to install for every detected agent.
 //   - Installs from upstream HEAD (no pins). Run `skills update -g` for
 //     routine refreshes; pin a source as `owner/repo@<ref>` here if a
 //     deterministic restore is ever needed.
@@ -24,6 +25,7 @@
 
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
+import { parseArgs } from "node:util";
 
 const DATA_PATH = new URL("./global-skills.json", import.meta.url);
 
@@ -52,7 +54,9 @@ function loadSources() {
 }
 
 function usage() {
-  console.log("Usage: node scripts/restore-skills.mjs [--dry-run] [--help]");
+  console.log(
+    "Usage: node scripts/restore-skills.mjs [--dry-run] [--agent <name>] [--help]",
+  );
 }
 
 function onPath(binary) {
@@ -80,18 +84,31 @@ function ensureSkillsCli(dryRun) {
   }
 }
 
+function parseOptions() {
+  let values;
+  try {
+    ({ values } = parseArgs({
+      options: {
+        "dry-run": { type: "boolean", default: false },
+        agent: { type: "string", default: "opencode" },
+        help: { type: "boolean", short: "h", default: false },
+      },
+    }));
+  } catch (error) {
+    fail(error.message);
+  }
+  return values;
+}
+
 function main() {
-  const args = process.argv.slice(2);
-  if (args.includes("--help") || args.includes("-h")) {
+  const opts = parseOptions();
+  if (opts.help) {
     usage();
     console.log("See the header comment in this script for full behavior.");
     return;
   }
-  const dryRun = args.includes("--dry-run");
-  const unknown = args.filter((a) => a !== "--dry-run");
-  if (unknown.length > 0) fail(`unknown argument(s): ${unknown.join(" ")}`);
 
-  ensureSkillsCli(dryRun);
+  ensureSkillsCli(opts["dry-run"]);
 
   const sources = loadSources();
   const failed = [];
@@ -102,18 +119,18 @@ function main() {
       "--global",
       "--yes",
       "--agent",
-      "*",
+      opts.agent,
       "--skill",
       ...skills,
     ];
     console.log(`\n>>> skills ${argv.join(" ")}`);
-    if (dryRun) continue;
+    if (opts["dry-run"]) continue;
     const result = spawnSync("skills", argv, { stdio: "inherit" });
     if (result.status !== 0) failed.push(source);
   }
 
   console.log(
-    dryRun
+    opts["dry-run"]
       ? "\ndry run complete"
       : `\ndone: ${sources.length - failed.length}/${sources.length} sources ok`,
   );
