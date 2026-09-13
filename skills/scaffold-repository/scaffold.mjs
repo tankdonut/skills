@@ -186,6 +186,9 @@ function readme(name, description, commands) {
   ].join("\n");
 }
 
+// Skeleton follows the agents-md skill's Default Sections template: command
+// table, reference tables, key conventions, and the commit-attribution block.
+// Judgment sections stay as TODO markers for the invoking agent.
 function agentsMd(name, description, commands, structure) {
   return [
     "# Agent Instructions",
@@ -207,7 +210,9 @@ function agentsMd(name, description, commands, structure) {
     "",
     "## Where To Look",
     "",
-    "<!-- TODO: map common change tasks to the files that own them. -->",
+    "<!-- TODO: map common change tasks to the files that own them; add",
+    "     | Need | File | rows for docs/specs/policies when they exist;",
+    "     delete this section if the repo is too small to need it. -->",
     "",
     "## Key Conventions",
     "",
@@ -217,7 +222,15 @@ function agentsMd(name, description, commands, structure) {
     "",
     "## Anti-Patterns",
     "",
-    "<!-- TODO: list project-specific anti-patterns worth guarding. -->",
+    "<!-- TODO: list project-specific anti-patterns worth guarding, or delete this section. -->",
+    "",
+    "## Commit Attribution",
+    "",
+    "AI commits MUST include:",
+    "",
+    "```text",
+    "Co-Authored-By: <agent name and attribution byline>",
+    "```",
     "",
   ].join("\n");
 }
@@ -675,4 +688,4 @@ if (archetype === "python-uv") {
   console.log("  go mod tidy && go build ./... && go test -race ./...");
   console.log("  git init && pre-commit install");
 }
-console.log("  fill AGENTS.md TODO markers before the first commit");
+console.log("  fill AGENTS.md TODO markers (delete sections that add no value) before the first commit");
