@@ -6,7 +6,9 @@ top-level directory containing a `SKILL.md`.
 
 ## Layout
 
-- One skill per directory under `skills/`: `skills/<name>/SKILL.md`.
+- One skill per directory under `skills/`: `skills/<name>/SKILL.md`,
+  optionally categorized one level deep (`skills/<category>/<name>/SKILL.md`).
+  Skill names come from frontmatter and must stay unique repo-wide.
 - Supporting scripts and reference docs live beside the `SKILL.md`.
 - No build step, no monorepo tooling — skills are plain files.
 - `scripts/` holds repo tooling: `global-skills.json` records the global
