@@ -14,6 +14,7 @@
       "source": "obra/superpowers",
       "skills": ["requesting-code-review", "using-git-worktrees", "writing-skills"]
     },
-    { "source": "tankdonut/skills", "skills": ["bootstrap-skills", "managing-worktrees", "update-opencode-plugins"] }
+    { "source": "tankdonut/skills", "skills": ["bootstrap-skills", "managing-worktrees", "update-opencode-plugins"] },
+    { "source": "blader/humanizer", "skills": ["humanizer"] }
   ]
 }
