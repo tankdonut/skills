@@ -1,17 +1,24 @@
 ---
 name: update-opencode-plugins
 license: MIT
-description: Use when updating, upgrading, or bumping opencode plugin versions in opencode.json (user-level at ~/.config/opencode/opencode.json or project-level at .opencode/opencode.json), including resolving the latest npm release with an optional 7-day cooldown that skips too-fresh versions, clearing the stale plugin cache at ~/.cache/opencode/packages, pre-installing each bumped plugin into that cache with a fully controlled npm environment (ambient NPM_CONFIG_* stripped and overridden) so opencode loads exactly the pinned version, and briefing the user on the GitHub release notes between the old and new pins.
+description: Use when updating, upgrading, or bumping opencode plugin versions in opencode.json or the TUI config tui.json (each at user level, ~/.config/opencode/, or project level, .opencode/; tui.json carries its own plugin array), including resolving the latest npm release with an optional 7-day cooldown that skips too-fresh versions, clearing the stale plugin cache at ~/.cache/opencode/packages, pre-installing each bumped plugin into that cache with a fully controlled npm environment (ambient NPM_CONFIG_* stripped and overridden) so opencode loads exactly the pinned version, and briefing the user on the GitHub release notes between the old and new pins.
 ---
 
 # Update OpenCode Plugin Versions
 
 ## Overview
 
-Keeps the `"plugin"` array in an `opencode.json` config current. Each entry is
+Keeps the `"plugin"` array in opencode configs current: `opencode.json` and
+`tui.json` at both the user level (`~/.config/opencode/`) and the project
+level (`.opencode/`). The TUI config carries its own plugin pins and can
+drift from the main config. Each entry is
 `name@version` (or `@scope/name@version`); this skill resolves the latest
 matching version from npm and rewrites the file, optionally skipping any version
-published within the last 7 days.
+published within the last 7 days. Entries are never added to or removed
+from a config — only existing pins change. A plugin pinned in several
+configs is pre-installed once and rewritten in each file; when
+`opencode.json` and `tui.json` pin the same plugin, `tui.json` follows the
+main config's final pin so the pair stays in sync.
 
 After rewriting the config, the skill also clears every cached version of each
 **bumped** plugin from `~/.cache/opencode/packages`. opencode caches every
@@ -48,7 +55,9 @@ constructible compare URL.
 | Constant | Value |
 |----------|-------|
 | User config | `~/.config/opencode/opencode.json` |
+| User TUI config | `~/.config/opencode/tui.json` (own `"plugin"` array) |
 | Project config | `$PWD/.opencode/opencode.json` |
+| Project TUI config | `$PWD/.opencode/tui.json` (own `"plugin"` array) |
 | Plugin cache | `~/.cache/opencode/packages` |
 | npm registry | `https://registry.npmjs.org/<package>` |
 | Default cooldown | 7 days |
@@ -84,7 +93,7 @@ non-interactive.
 | `--yes` | Apply immediately; skip the dry-run confirmation gate. The helper still prints the diff as it writes. |
 | `--latest` | Cooldown 0 — absolute newest stable release. |
 | `--cooldown <days>` | Explicit cooldown in days. |
-| `--user` / `--project` / `--both` | Explicit scope. `--both` processes every config that exists and reports missing ones. |
+| `--user` / `--project` / `--both` | Explicit scope. Each covers the `opencode.json` + `tui.json` pair at its level; `--both` processes every config that exists and reports missing ones. |
 | `--prerelease` | Include beta/rc versions. Only when the user explicitly asks. |
 | `--no-cache-clean` | Leave the plugin cache alone. Only when the user explicitly asks. |
 | `--no-install` | Skip pre-installing bumped plugins into the cache; opencode installs them itself on restart, under whatever `NPM_CONFIG_*` env it was launched with. Only when the user explicitly asks. |
@@ -96,7 +105,7 @@ every decision (scope + cooldown), NEVER use the `question` tool — decide from
 the table above and state the chosen values in the final report. Precedence:
 explicit user statement > explicit flag > `--default` defaults > interview.
 Only interview for decisions that are still unresolved in an interactive run.
-"Neither config exists" is a hard stop (report and end) — not a question.
+"No config exists in scope" is a hard stop (report and end) — not a question.
 
 ## Workflow
 
@@ -104,11 +113,19 @@ Only interview for decisions that are still unresolved in an interactive run.
    resolve the decision set: scope, cooldown, apply now (`--yes`),
    non-interactive (`--default` or all decisions flag-fixed).
 
-2. **Locate configs.** Check both paths with `ls` / `Read`:
+2. **Locate configs.** Check the paths with `ls` / `Read`:
    - User: `~/.config/opencode/opencode.json`
+   - User TUI: `~/.config/opencode/tui.json`
    - Project: `$PWD/.opencode/opencode.json`
+   - Project TUI: `$PWD/.opencode/tui.json`
+   Each `tui.json` carries its own `"plugin"` array; the `--user` /
+   `--project` scopes process it together with the sibling main config.
+   (opencode's loader also reads a few more TUI locations — project-root
+   `tui.json`, `.jsonc` variants, `~/.opencode/tui.json`, and
+   `OPENCODE_TUI_CONFIG`. The skill covers the canonical slots; hand any
+   other file to `--config <path>`.)
    Record which exist and whether each has a non-empty `"plugin"` array.
-   Neither exists → stop and tell the user; do not invent a path.
+   None in scope exists → stop and tell the user; do not invent a path.
 
 3. **Interview — only for decisions still unresolved.** Skip a question when
    the invocation already answers it (flag or explicit user statement) or when
@@ -192,6 +209,17 @@ Only interview for decisions that are still unresolved in an interactive run.
 ## Behavior Rules
 
 - **Never downgrade.** If the pinned version is newer than the target, skip.
+- **Never add or remove entries.** Only the `@version` of an entry already
+  present changes — in particular, plugins pinned in `opencode.json` but not
+  in `tui.json` are never copied into it, and a `tui.json` without a
+  `"plugin"` array is left alone.
+- **tui.json follows its sibling.** For a plugin pinned in both
+  `opencode.json` and `tui.json` at the same level, `tui.json` is bumped to
+  the main config's *final* pin (after the main config's own bumps), so the
+  pair never disagrees; the cooldown never re-decides a version the main
+  config already adopted, and a `tui.json` pin already at/above the
+  sibling's is left alone (never downgrade). Plugins pinned only in
+  `tui.json` resolve independently via npm as usual.
 - **Never rewrite unrelated keys.** The helper preserves JSON key order, the
   detected indentation, and the trailing newline. Do not hand-edit around it.
 - **Never write broken JSON.** If a config fails to parse, report it, skip it,
@@ -230,10 +258,14 @@ Only interview for decisions that are still unresolved in an interactive run.
   any token-carrying `npm_config_*` vars) is stripped too — private registries
   requiring authentication are out of scope; the helper resolves from
   anonymous packument fetches.
-- **Never treat a target dir as stale.** A cached — even partial —
-  `<name>@<target>` dir is reused (fast-path skip) or cleanly reinstalled,
-  never removed by the stale-cache sweep; only *other* versions of bumped
-  plugins are removed.
+- **Never treat a target dir — or a still-pinned version — as stale.** A
+  cached — even partial — `<name>@<target>` dir is reused (fast-path skip)
+  or cleanly reinstalled, never removed by the stale-cache sweep. The sweep
+  also spares every version any opencode config on the machine still pins
+  after the rewrite — in scope or not (`opencode.json` and `tui.json`
+  commonly pin the same plugin at different versions, and the plugin cache
+  is shared across user and project level); only versions nothing pins
+  anymore are removed.
 - **Brief, never gate.** The release-notes briefing runs after the update (or
   at the end of a dry run) and is purely informational: it never blocks, never
   asks, never fails the run, and is skipped entirely with `--no-briefing`.
@@ -245,9 +277,14 @@ Only interview for decisions that are still unresolved in an interactive run.
 - No `"plugin"` array, or empty → that config reports "nothing to do" and is
   skipped; other configs still process. Nothing to do anywhere → report and
   stop (success).
-- Scope flag names a missing config → `--user`/`--project` are hard errors;
-  `--both` (and `--default`) report the miss and continue with what exists.
+- Scope flag names missing configs → a scope is a hard error only when
+  **every** file it covers is missing (`--user`: both user files;
+  `--project`: both project files); otherwise the missing ones are skipped
+  with a notice; `--both` (and `--default`) report misses and continue with
+  what exists.
 - No version is old enough under cooldown → that plugin is left untouched.
+- `opencode.json` missing or unparseable while `tui.json` is in scope → no
+  sibling pins exist, so every `tui.json` entry resolves independently.
 - `npm view`/registry unreachable → report the network error; do not guess versions.
 - Cache dir absent, or no cached version exists for a bumped plugin → the helper
   reports "No stale cache entries found for bumped plugins" and continues; there

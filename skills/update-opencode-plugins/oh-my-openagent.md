@@ -54,12 +54,16 @@ afterwards (one token), so the diff stays surgical.
 
 ## Procedure
 
-**0. Pre-flight (no mutations).** Back up both coupling points and re-check
-the tag — beta releases land multiple times a day:
+**0. Pre-flight (no mutations).** Back up every coupling point — OmO can be
+pinned in `opencode.json` *and* `tui.json`, at both user and project level —
+and re-check the tag; beta releases land multiple times a day:
 
 ```bash
 ts=$(date +%Y%m%d-%H%M%S)
 cp ~/.config/opencode/opencode.json ~/.config/opencode/opencode.json.bak-$ts
+[ -f ~/.config/opencode/tui.json ] && cp ~/.config/opencode/tui.json ~/.config/opencode/tui.json.bak-$ts
+[ -f .opencode/opencode.json ] && cp .opencode/opencode.json .opencode/opencode.json.bak-$ts
+[ -f .opencode/tui.json ] && cp .opencode/tui.json .opencode/tui.json.bak-$ts
 mkdir -p /tmp/opencode
 tar -czf /tmp/opencode/omo-backup-$ts.tar.gz -C ~ .omo   # live sockets are skipped safely
 npm view oh-my-openagent dist-tags --json
@@ -74,13 +78,14 @@ node -e "console.log(require(process.env.HOME +
 ```
 
 **2. Surgical pin edit.** Change only the version token on the OmO line of
-the real `opencode.json`, preserving key order, indentation, and the trailing
-newline. Then validate:
+**every** config pinning it (`~/.config/opencode/opencode.json`, and each
+`tui.json` / project config when it pins OmO), preserving key order,
+indentation, and the trailing newline. Then validate:
 
 ```bash
 python3 -m json.tool ~/.config/opencode/opencode.json > /dev/null
 diff ~/.config/opencode/opencode.json.bak-<ts> ~/.config/opencode/opencode.json
-# expected: exactly one changed line
+# expected: exactly one changed line per file; repeat for every backed-up config
 ```
 
 **3. Restart opencode.** Plugins load once at process start (cache fast
