@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Update opencode plugin @versions in opencode.json config files.
+// Update opencode plugin @versions in opencode.json / tui.json config files.
 //
 // Usage:
 //   node update-plugins.mjs [--config <path> | --user | --project | --both]
@@ -8,14 +8,22 @@
 //                           [--no-install] [--registry <url>] [--no-briefing]
 //
 // Scope:
-//   --config <path>   one specific opencode.json
-//   --user            ~/.config/opencode/opencode.json
-//   --project         $PWD/.opencode/opencode.json
+//   --config <path>   one specific config file
+//   --user            ~/.config/opencode/{opencode,tui}.json
+//   --project         $PWD/.opencode/{opencode,tui}.json
 //   --both            every one of the above that exists (missing -> notice)
 //
 // Behavior:
 //   - Reads the "plugin" array from each config, fetches each package's npm
 //     packument, and resolves the latest eligible version.
+//   - Entries are never added to or removed from any config — only the
+//     @version of an entry already present changes.
+//   - tui.json pairs with the opencode.json at its level: an entry whose
+//     plugin the main config also pins is bumped to the main config's FINAL
+//     pin (after its own bumps), so the pair stays in sync; the cooldown
+//     never re-decides a version the main config already adopted, and a
+//     tui pin already at/above the sibling's is left alone (never
+//     downgrade). Entries with no sibling pin resolve independently.
 //   - With --cooldown <days>, selects the newest version published at least
 //     <days> days ago (skips too-fresh releases). Default 0 (no cooldown).
 //     --latest is shorthand for --cooldown 0.
@@ -66,19 +74,38 @@ const REGISTRY = "https://registry.npmjs.org";
 // (scoped packages nest one level: "<@scope>/<name>@<version>").
 const DEFAULT_CACHE = path.join(homedir(), ".cache", "opencode", "packages");
 
-// Standard config locations, resolvable by scope flag.
+// Standard config locations, resolvable by scope flag. The TUI config
+// (tui.json) carries its own "plugin" array and exists at both the user
+// level (~/.config/opencode/) and the project level (.opencode/), so every
+// scope covers the opencode.json + tui.json pair at its level. opencode's
+// loader also reads a few more TUI locations (project-root tui.json, .jsonc
+// variants, ~/.opencode/tui.json, $OPENCODE_TUI_CONFIG); those are out of
+// scope here — hand them to --config <path>.
 const CONFIG_PATHS = {
   user: path.join(homedir(), ".config", "opencode", "opencode.json"),
+  "user-tui": path.join(homedir(), ".config", "opencode", "tui.json"),
   project: path.join(process.cwd(), ".opencode", "opencode.json"),
+  "project-tui": path.join(process.cwd(), ".opencode", "tui.json"),
+};
+
+// Scope flag -> config slots to process. Every scope keeps each config that
+// exists and reports the missing ones; a scope with no existing config at
+// all is an error.
+const SCOPE_KEYS = {
+  user: ["user", "user-tui"],
+  project: ["project", "project-tui"],
+  both: ["user", "user-tui", "project", "project-tui"],
 };
 
 function printHelp() {
   process.stdout.write(`Usage: node update-plugins.mjs [--config <path> | --user | --project | --both]
                            [--cooldown <days> | --latest] [--default] [--yes]
 
-  --config <path>    Target one specific opencode.json containing a "plugin" array.
-  --user             Target the user config: ~/.config/opencode/opencode.json.
-  --project          Target the project config: $PWD/.opencode/opencode.json.
+  --config <path>    Target one specific config file containing a "plugin" array.
+  --user             Target the user configs: ~/.config/opencode/opencode.json and
+                     ~/.config/opencode/tui.json (every one that exists; missing -> notice).
+  --project          Target the project configs: $PWD/.opencode/opencode.json and
+                     $PWD/.opencode/tui.json (every one that exists; missing -> notice).
   --both             Target every config above that exists (missing ones are reported and skipped).
   --cooldown <days>  Only upgrade to the newest version at least <days> days old. Default 0 (latest).
   --latest           Shorthand for --cooldown 0 (absolute newest stable).
@@ -475,22 +502,23 @@ async function printBriefing(actionable, opts) {
 }
 
 // Resolve which config files to process from --config or the scope flags.
-// --both (and --default's implied scope) keep every config that exists and
-// report the missing ones; an explicit single scope that is missing is an
-// error. Returns config paths.
+// Every scope spans the opencode.json + tui.json pair at its level (--both
+// spans all four); each config that exists is processed and the missing ones
+// are reported. A scope with no existing config at all is an error. Returns
+// config paths.
 function resolveConfigs(opts) {
   if (opts.config) return [opts.config];
-  const wanted = opts.scope === "both" ? ["user", "project"] : [opts.scope];
+  const wanted = SCOPE_KEYS[opts.scope];
   const found = wanted.filter((k) => existsSync(CONFIG_PATHS[k]));
   for (const k of wanted) {
     if (!found.includes(k)) {
       const msg = `${k} config not found: ${CONFIG_PATHS[k]}`;
-      if (found.length > 0 || opts.scope === "both") console.log(`Skipping: ${msg}`);
+      if (found.length > 0 || wanted.length > 1) console.log(`Skipping: ${msg}`);
       else fail(msg);
     }
   }
   if (found.length === 0) {
-    fail(`No opencode.json found at:\n  ${wanted.map((k) => CONFIG_PATHS[k]).join("\n  ")}`);
+    fail(`No opencode config found at:\n  ${wanted.map((k) => CONFIG_PATHS[k]).join("\n  ")}`);
   }
   return found.map((k) => CONFIG_PATHS[k]);
 }
@@ -499,8 +527,11 @@ function resolveConfigs(opts) {
 // writing anything. Returns { configPath, status, changes, raw, cfg }:
 // status "error" (reported), "clean" (nothing to do), or "ok" (changes
 // pending). Prints the per-config report.
-async function planConfig(configPath, opts) {
+async function planConfig(configPath, opts, siblingPins) {
   console.log(`== ${configPath} ==`);
+  // tui.json pairs with the sibling opencode.json planned just before it
+  // (same scope); siblingPins carries that plan's final pins, if any.
+  const isTuiConfig = path.basename(configPath) === "tui.json";
 
   let raw;
   try {
@@ -520,7 +551,7 @@ async function planConfig(configPath, opts) {
 
   if (!Array.isArray(cfg.plugin) || cfg.plugin.length === 0) {
     console.log(`No "plugin" array in ${configPath}; nothing to do.`);
-    return { configPath, status: "clean" };
+    return { configPath, status: "clean", finalEntries: [] };
   }
 
   const changes = [];
@@ -537,7 +568,19 @@ async function planConfig(configPath, opts) {
       continue;
     }
 
-    const target = pickTarget(pkg, opts.cooldown, opts.prerelease);
+    // Shared plugins mirror the sibling opencode.json's final pin so the
+    // pair never disagrees; tui-only entries resolve via npm as usual.
+    const sib = isTuiConfig ? siblingPins?.get(name) : undefined;
+    let target;
+    if (sib !== undefined) {
+      if (current && cmpVersion(sib, current) <= 0) {
+        console.error(`skip ${name}: tui pin ${current} already at/above the opencode.json pin ${sib}`);
+        continue;
+      }
+      target = sib;
+    } else {
+      target = pickTarget(pkg, opts.cooldown, opts.prerelease);
+    }
     if (!target) {
       console.error(`skip ${name}: no eligible version (cooldown ${opts.cooldown}d)`);
       continue;
@@ -562,24 +605,8 @@ async function planConfig(configPath, opts) {
 
   if (changes.length === 0) {
     console.log("All plugins up to date.");
-    return { configPath, status: "clean" };
+    return { configPath, status: "clean", finalEntries: cfg.plugin };
   }
-
-  // Stale plugin cache: opencode caches every installed plugin version under
-  // <cache>/<name>@<ver>. When the pin in opencode.json changes but the new
-  // version isn't fetched yet, opencode falls back to whatever older version
-  // is still cached -> the loaded plugin disagrees with the config schema and
-  // every agent silently reverts to defaults. With pre-install on, the new
-  // version is installed up front; clearing the old dirs is then pure hygiene.
-  // The TARGET dirs are excluded: a cached (or partial) <name>@<target> must
-  // never be counted as stale — deleting the dir we just installed (or are
-  // about to reuse via the fast path) would undo the pre-install.
-  const targetDirs = new Set(changes.map((c) => path.resolve(opts.cache, c.targetEntry)));
-  const staleCacheDirs = opts.noCacheClean
-    ? []
-    : [...new Set(changes.flatMap((c) => cacheEntriesFor(opts.cache, c.name)))].filter(
-        (d) => !targetDirs.has(path.resolve(d)),
-      );
 
   const tag = opts.cooldown > 0 ? ` (cooldown ${opts.cooldown}d)` : " (latest)";
   console.log(`Proposed changes${tag}:`);
@@ -594,16 +621,79 @@ async function planConfig(configPath, opts) {
       console.log(`  ${path.join(opts.cache, c.targetEntry)}`);
     }
   }
+
+  // Final pins after the rewrite; feeds the cross-config stale-cache
+  // protection (see protectedCacheDirs below).
+  const finalEntries = cfg.plugin.map(
+    (entry) => changes.find((c) => c.entry === entry)?.targetEntry ?? entry,
+  );
+  return { configPath, status: "ok", changes, finalEntries, raw, cfg };
+}
+
+// Union of every plugin version that will still be pinned after the rewrite,
+// across ALL configs in scope — including untouched ones, whose pins stay
+// live. opencode.json and tui.json commonly pin the same plugin at different
+// versions; sweeping a version another config still pins would rip it out
+// from under a live install (cache fast path miss -> re-resolve or missing
+// plugin on next start).
+function protectedCacheDirs(plans, cacheDir) {
+  const dirs = new Set();
+  for (const p of plans) {
+    if (p.status === "error") continue;
+    for (const entry of p.finalEntries ?? []) {
+      const { name, version } = splitEntry(entry);
+      if (name && version) dirs.add(path.resolve(cacheDir, `${name}@${version}`));
+    }
+  }
+  return dirs;
+}
+
+// name -> version map of a plan's final pins (post-bump), for the tui.json
+// sibling coupling. Unpinned entries contribute nothing.
+function pinsFromEntries(entries) {
+  const m = new Map();
+  for (const entry of entries) {
+    if (typeof entry !== "string") continue;
+    const { name, version } = splitEntry(entry);
+    if (name && version) m.set(name, version);
+  }
+  return m;
+}
+
+// Pins of a config the run does NOT process. Read-only, best-effort: an
+// unreadable config contributes nothing (its pins are unknowable).
+function pinsFromConfig(configPath) {
+  try {
+    const cfg = JSON.parse(readFileSync(configPath, "utf8"));
+    return Array.isArray(cfg.plugin) ? pinsFromEntries(cfg.plugin) : new Map();
+  } catch {
+    return new Map();
+  }
+}
+
+// Stale-cache dirs for one actionable plan: every cached version of its
+// bumped plugins that NO config in scope pins after the rewrite (targets
+// are included in the protected set, so they can never be swept either).
+function computeStaleDirs(plan, protectedDirs, opts) {
+  if (opts.noCacheClean) return [];
+  return [...new Set(plan.changes.flatMap((c) => cacheEntriesFor(opts.cache, c.name)))].filter(
+    (d) => !protectedDirs.has(path.resolve(d)),
+  );
+}
+
+function reportStaleDirs(actionable, opts) {
   if (opts.noCacheClean) {
     console.log("\nCache cleanup skipped (--no-cache-clean).");
-  } else if (staleCacheDirs.length > 0) {
-    console.log("\nStale cache dirs to remove:");
-    for (const d of staleCacheDirs) console.log(`  ${d}`);
-  } else {
-    console.log("\nNo stale cache entries found for bumped plugins.");
+    return;
   }
-
-  return { configPath, status: "ok", changes, staleCacheDirs, raw, cfg };
+  let any = false;
+  for (const p of actionable) {
+    if (p.staleCacheDirs.length === 0) continue;
+    any = true;
+    console.log(`\nStale cache dirs to remove (${p.configPath}):`);
+    for (const d of p.staleCacheDirs) console.log(`  ${d}`);
+  }
+  if (!any) console.log("\nNo stale cache entries found for bumped plugins.");
 }
 
 // Apply a plan: write the config back (preserving key order, detected
@@ -636,13 +726,35 @@ async function main() {
 
   let anyError = false;
   const plans = [];
+  // Sibling coupling: resolveConfigs returns each scope's opencode.json
+  // before its tui.json, so the main config's final pins feed the tui plan.
+  let siblingPins = new Map();
   for (let i = 0; i < configs.length; i++) {
     if (i > 0) console.log("");
-    const plan = await planConfig(configs[i], opts);
+    const isTui = path.basename(configs[i]) === "tui.json";
+    const plan = await planConfig(configs[i], opts, isTui ? siblingPins : undefined);
     plans.push(plan);
     if (plan.status === "error") anyError = true;
+    siblingPins =
+      plan.status === "error" || isTui ? new Map() : pinsFromEntries(plan.finalEntries ?? []);
   }
   const actionable = plans.filter((p) => p.status === "ok");
+
+  // Stale-cache sweep: cross-config protection first, then per-plan dirs.
+  // Protection spans every canonical config, not just the scope: the plugin
+  // cache is shared across levels, so a project run must not sweep a version
+  // the user config still pins (and vice versa).
+  if (actionable.length > 0) {
+    const protectedDirs = protectedCacheDirs(plans, opts.cache);
+    for (const cfgPath of Object.values(CONFIG_PATHS)) {
+      if (configs.includes(cfgPath) || !existsSync(cfgPath)) continue;
+      for (const [n, v] of pinsFromConfig(cfgPath)) {
+        protectedDirs.add(path.resolve(opts.cache, `${n}@${v}`));
+      }
+    }
+    for (const p of actionable) p.staleCacheDirs = computeStaleDirs(p, protectedDirs, opts);
+    reportStaleDirs(actionable, opts);
+  }
 
   if (actionable.length > 0 && !opts.yes) {
     console.log("\nDry run. Re-run with --yes to apply.");
