@@ -1,40 +1,41 @@
 ---
 name: configure-opencode
 license: MIT
-description: Use when creating or editing opencode configuration — opencode.json, opencode.jsonc, or tui.json at user level (~/.config/opencode/) or project level (.opencode/) — covering plugins, custom agents, commands, MCP servers, permissions, keybinds, themes, and plugin config files like dcp.json or opencode-mem.jsonc; when config edits are not taking effect; or when troubleshooting plugin cache staleness or config precedence.
+description: Use when creating or editing opencode configuration — opencode.json, opencode.jsonc, or tui.json at user level (~/.config/opencode/) or project level (.opencode/) — including choosing, installing, or removing plugins (with per-plugin config files like dcp.json or opencode-mem.jsonc) and custom themes, setting up agents, commands, MCP servers, permissions, and keybinds; when config edits are not taking effect; or when troubleshooting plugin cache staleness or config precedence.
 ---
 
 # Configure OpenCode
 
 ## Overview
 
-Safe, correct edits to the opencode config surface on this setup
-(opencode 1.18.x). Covers the file map, precedence, plugin pinning,
-secrets handling, and post-edit verification. Full schema key lists,
-code-level citations, and CLI verbs live in
+Safe, correct edits to the opencode config surface (opencode 1.18.x):
+the file map, precedence, component selection — plugins and themes from
+setup-agnostic catalogs — plugin pinning, secrets handling, and
+post-edit verification. Full schema key lists, code-level citations, and
+CLI verbs live in
 [reference/opencode-config-reference.md](reference/opencode-config-reference.md).
 
 Facts below are verified against the v1.18.31 source (tag `014614d`,
 `anomalyco/opencode`; `sst/opencode` redirects there). The live docs at
 opencode.ai now describe v2 — drift is flagged wherever it bites.
 
-## Ground truth — this setup
+## Config dir map (user level)
 
 | Path (under `~/.config/opencode/`) | Role |
 |---|---|
 | `opencode.json` | Main config: `permission`, per-`agent` overrides, `plugin` array |
 | `tui.json` | TUI config: `theme`, own `plugin` subset, `scroll_acceleration` |
 | `themes/*.json` | Custom theme files |
-| `dcp.json` | @tarquinen/opencode-dcp config (context-pruning thresholds, `turnProtection`) |
-| `opencode-mem.jsonc` | opencode-mem config — JSONC (comments allowed) |
-| `oh-my-openagent/native-nudge.json` | oh-my-openagent data |
+| `dcp.json` | Plugin-owned config (context pruning) — strict JSON |
+| `opencode-mem.jsonc` | Plugin-owned config (memory) — JSONC (comments allowed) |
+| `oh-my-openagent/` | Plugin data dir (orchestration host) |
 | *(API key file)* | **Secret** — key material lives in a standalone file in the config dir, referenced only via `file://`; never inline it, print it, or commit it |
 | `package.json`, `node_modules/`, `bun.lock`, `lsp-install-decisions.json` | Auto-managed by opencode / plugin host — do not hand-edit |
 | `*.bak-<timestamp>` | Manual backup copies — the established pre-edit habit |
 
-Current plugin pins: `@tarquinen/opencode-dcp@3.2.0` (both configs),
-`oh-my-openagent@5.0.0` (both configs), `cc-safety-net@2.4.6` and
-`opencode-mem@2.26.0` (main config only).
+The plugin set lives in the `plugin` array as `name@version` pins; any
+plugin pinned in both `opencode.json` and `tui.json` must carry the
+identical pin in each.
 
 Other locations:
 
@@ -97,11 +98,25 @@ Load-bearing facts:
 7. Leave `package.json` / `node_modules` / `bun.lock` in config dirs alone —
    opencode maintains them for plugin helper deps.
 
+## Choose & install components
+
+**Plugins** — [reference/plugins.md](reference/plugins.md) is a
+setup-agnostic catalog (context pruning, memory, orchestration host,
+shell guardrails) with per-plugin config templates and the generic
+install / remove / disable workflows: resolve an exact version, pin in
+`opencode.json` (mirror in `tui.json` for TUI-kind), create the
+plugin's config file, restart, verify.
+
+**Themes** — [reference/themes.md](reference/themes.md) covers the
+theme JSON format (`defs` palette + semantic slot map with dark/light
+variants), file placement (`themes/<name>.json`, user or project
+level), and activation via `tui.json` `theme`.
+
 ## Common tasks
 
-**Add an npm plugin** — append `"name@x.y.z"` to `opencode.json` `plugin`;
-add to `tui.json` too only if it must run in the TUI (same pin). Restart
-opencode — it installs into the version-keyed cache dir on first start.
+**Add or remove an npm plugin** — follow the catalog workflow in
+[reference/plugins.md](reference/plugins.md); removal clears the pin
+from **both** configs plus the plugin's config file.
 
 **Add an agent** (`.opencode/agents/reviewer.md` or global equivalent):
 
@@ -137,8 +152,9 @@ System prompt body…
 `webfetch`/`websearch` accept a bare `"allow"|"ask"|"deny"` only.
 
 **Switch model / theme / keybinds** — `model: "provider/model-id"` in
-`opencode.json`; `theme` in `tui.json` (custom JSON in `themes/`);
-keybind overrides in `tui.json` `keybinds`.
+`opencode.json`; theme install + activation in
+[reference/themes.md](reference/themes.md); keybind overrides in
+`tui.json` `keybinds`.
 
 ## Verification
 
@@ -163,6 +179,9 @@ keybind overrides in `tui.json` `keybinds`.
 
 ## Cross-references
 
+- **Plugin catalog & install/remove/disable workflows**:
+  [reference/plugins.md](reference/plugins.md).
+- **Theme format & install**: [reference/themes.md](reference/themes.md).
 - **Plugin version bumps**: use the `update-opencode-plugins` skill —
   npm resolution, cooldown, cache hygiene, release-notes briefing.
 - **Project-scoped skills**: use `bootstrap-skills` (skills-lock.json flow).
