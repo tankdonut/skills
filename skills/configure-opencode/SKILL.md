@@ -1,7 +1,7 @@
 ---
 name: configure-opencode
 license: MIT
-description: Use when creating or editing opencode configuration — opencode.json, opencode.jsonc, or tui.json at user level (~/.config/opencode/) or project level (.opencode/) — including choosing, installing, or removing plugins (with per-plugin config files like dcp.json or opencode-mem.jsonc) and custom themes, setting up agents, commands, MCP servers, permissions, and keybinds; when config edits are not taking effect; or when troubleshooting plugin cache staleness or config precedence.
+description: Use when creating or editing opencode configuration — opencode.json, opencode.jsonc, or tui.json at user level (~/.config/opencode/) or project level (.opencode/) — including choosing, installing, or removing plugins (with per-plugin config files like dcp.json or opencode-mem.jsonc) and custom themes, applying a defaults profile generated from a live configuration to replicate chosen defaults and plugin settings across environments, setting up agents, commands, MCP servers, permissions, and keybinds; when config edits are not taking effect; or when troubleshooting plugin cache staleness or config precedence.
 ---
 
 # Configure OpenCode
@@ -112,6 +112,24 @@ theme JSON format (`defs` palette + semantic slot map with dark/light
 variants), file placement (`themes/<name>.json`, user or project
 level), and activation via `tui.json` `theme`.
 
+## Defaults profile
+
+A defaults profile records your chosen defaults — **generated from the
+current configuration**, replayable onto any environment:
+
+```bash
+node scripts/apply-profile.mjs --init                  # snapshot live config → profile
+node scripts/apply-profile.mjs --dir <config-dir>      # dry-run replay (exit 2 if changes pending)
+node scripts/apply-profile.mjs --dir <config-dir> --apply   # write, backups first
+```
+
+Profile default location: `~/.config/opencode/bootstrap/` — private by
+convention (it mirrors the real config; never commit it to this repo).
+Secret contents are never captured; the run prints a manual checklist
+for `file://`/`env://` references. Merge semantics (deep-merge,
+profile-wins, plugin union by name) and the fresh-machine bootstrap
+sequence: [reference/defaults-profile.md](reference/defaults-profile.md).
+
 ## Common tasks
 
 **Add or remove an npm plugin** — follow the catalog workflow in
@@ -182,6 +200,9 @@ System prompt body…
 - **Plugin catalog & install/remove/disable workflows**:
   [reference/plugins.md](reference/plugins.md).
 - **Theme format & install**: [reference/themes.md](reference/themes.md).
+- **Defaults profile (snapshot/replay)**:
+  [reference/defaults-profile.md](reference/defaults-profile.md) —
+  `scripts/apply-profile.mjs`.
 - **Plugin version bumps**: use the `update-opencode-plugins` skill —
   npm resolution, cooldown, cache hygiene, release-notes briefing.
 - **Project-scoped skills**: use `bootstrap-skills` (skills-lock.json flow).
