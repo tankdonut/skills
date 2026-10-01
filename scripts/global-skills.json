@@ -3,7 +3,6 @@
   "sources": [
     { "source": "tt-a1i/archify", "skills": ["archify"] },
     { "source": "anthropics/knowledge-work-plugins", "skills": ["build-dashboard"] },
-    { "source": "github/awesome-copilot", "skills": ["create-agentsmd"] },
     { "source": "vercel-labs/skills", "skills": ["find-skills"] },
     { "source": "wshobson/agents", "skills": ["github-actions-templates"] },
     { "source": "samber/cc-skills-golang", "skills": ["golang-performance"] },
