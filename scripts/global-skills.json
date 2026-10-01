@@ -1,7 +1,6 @@
 {
   "version": 1,
   "sources": [
-    { "source": "getsentry/skills", "skills": ["agents-md"] },
     { "source": "tt-a1i/archify", "skills": ["archify"] },
     { "source": "anthropics/knowledge-work-plugins", "skills": ["build-dashboard"] },
     { "source": "github/awesome-copilot", "skills": ["create-agentsmd"] },

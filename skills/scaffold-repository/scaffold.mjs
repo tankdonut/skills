@@ -186,9 +186,9 @@ function readme(name, description, commands) {
   ].join("\n");
 }
 
-// Skeleton follows the agents-md skill's Default Sections template: command
-// table, reference tables, key conventions, and the commit-attribution block.
-// Judgment sections stay as TODO markers for the invoking agent.
+// Skeleton shape: command table, reference tables, key conventions, and the
+// commit-attribution block. Judgment sections stay as TODO markers for the
+// invoking agent.
 function agentsMd(name, description, commands, structure) {
   return [
     "# Agent Instructions",

@@ -14,10 +14,10 @@ markdownlint-cli2), renovate with 7-day automerge, CI on reusable
 `tankdonut/github-actions` workflows, and an AGENTS.md in the house shape.
 
 A zero-dependency Node helper (`scaffold.mjs`, beside this file) writes the
-deterministic files. The AGENTS.md skeleton ships in the `agents-md` skill's
-Default Sections template shape (Commands, Structure, Key Conventions,
-Commit Attribution). The agent owns the judgment content: the interview, the
-AGENTS.md and README bodies, dependency choices, and verification.
+deterministic files, including an AGENTS.md skeleton in the house shape
+(Commands, Structure, Key Conventions, Commit Attribution). The agent owns
+the judgment content: the interview, the AGENTS.md and README bodies,
+dependency choices, and verification.
 
 Two archetypes:
 
@@ -62,14 +62,11 @@ hand from the nearest tankdonut repo).
    directories.
 
 5. **Fill judgment files** — the scaffold is unfinished without this:
-   - `AGENTS.md`: **REQUIRED SUB-SKILL:** load `agents-md` (skill tool) and
-     follow its template and writing rules while replacing every
-     `<!-- TODO -->` with real content — purpose paragraph, Where To Look
-     map, Anti-Patterns. Keep it under 60 lines, delete sections that add
-     no value, keep the Commit Attribution section, and symlink
-     `CLAUDE.md` → `AGENTS.md` only if a Claude-compatible entrypoint is
-     needed. If `agents-md` is not installed, follow the skeleton's built-in
-     shape and the rules above.
+   - `AGENTS.md`: replace every `<!-- TODO -->` in the skeleton with real
+     content — purpose paragraph, Where To Look map, Anti-Patterns. Keep it
+     under 60 lines, delete sections that add no value, keep the Commit
+     Attribution section, and symlink `CLAUDE.md` → `AGENTS.md` only if a
+     Claude-compatible entrypoint is needed.
    - `README.md`: expand the stub if the purpose warrants it.
    - Initial dependencies for the project's actual function:
      `uv add <deps>` (then `uv run pytest`) / `go get <deps>`.

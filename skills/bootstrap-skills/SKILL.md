@@ -106,7 +106,6 @@ No recommendations, no prose.
 | Go (`go.mod`) with perf-sensitive hot paths | `golang-performance` | samber/cc-skills-golang |
 | `.github/workflows/*` present | `github-actions-templates` | wshobson/agents |
 | No `.pre-commit-config.yaml` | `setup-pre-commit` | mattpocock/skills |
-| Missing or stale `AGENTS.md` | `agents-md` | getsentry/skills |
 | Repo hosts its own skills (`**/SKILL.md`) | `writing-skills` | obra/superpowers |
 | PR-based review flow (PR templates, review culture) | `requesting-code-review` | obra/superpowers |
 | Empty or brand-new repository | stop — `scaffold-repository` first | tankdonut/skills |
