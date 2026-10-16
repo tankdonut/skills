@@ -45,11 +45,3 @@ top-level directory containing a `SKILL.md`.
 
 - Preserve existing JSON indentation and trailing newlines when editing configs.
 - Never commit secrets or hard-coded absolute home paths in skill bodies.
-
-## Commit Attribution
-
-AI commits MUST include:
-
-```text
-Co-Authored-By: <agent name and attribution byline>
-```
