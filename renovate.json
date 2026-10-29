@@ -3,7 +3,7 @@
   "extends": [
     "config:recommended"
   ],
-  "minimumReleaseAge": "1 day",
+  "minimumReleaseAge": "7 days",
   "reviewers": [
     "tankdonut"
   ]
